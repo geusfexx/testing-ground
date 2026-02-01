@@ -60,9 +60,9 @@ public:
         std::size_t curr_t = tail.load(std::memory_order_relaxed);
         std::size_t next = increment(curr_t);
 
-        if (next == head.load(std::memory_order_acquire)) return false;
+        if (next == head.load(std::memory_order_acquire)) return false; // MB on
         buffer[curr_t] = val;
-        tail.store(next, std::memory_order_release);
+        tail.store(next, std::memory_order_release); // MB off
 
         return true;
     }
@@ -70,9 +70,9 @@ public:
     bool pop(T& val) {
         std::size_t curr_h = head.load(std::memory_order_relaxed);
 
-        if (curr_h == tail.load(std::memory_order_acquire)) return false;
+        if (curr_h == tail.load(std::memory_order_acquire)) return false; // MB on
         val = buffer[curr_h];
-        head.store(increment(curr_h), std::memory_order_release);
+        head.store(increment(curr_h), std::memory_order_release); // MB off
 
         return true;
     }
@@ -81,4 +81,61 @@ private:
     T buffer[Capacity];
     alignas(CacheLine) std::atomic<std::size_t> head{0};
     alignas(CacheLine) std::atomic<std::size_t> tail{0};
+};
+
+/* It has:  False Sharing resolved with alignas
+*           array
+*           acq-rel fence
+*           division using bitwise "AND"
+*/
+template <typename T, std::size_t Capacity>
+class SPSC_RingBufferUltraFast {
+    
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
+
+    std::size_t increment(std::size_t i) const noexcept {
+        if constexpr (isPowerOfTwo(Capacity)) return (i + 1) & (Capacity - 1);
+        else return (i + 1) % Capacity;
+    }
+
+public:
+    bool push(const T& value) {
+        const std::size_t curr_t = tail.load(std::memory_order_relaxed);
+
+        if (increment(curr_t) == head_cache) {
+            head_cache = head.load(std::memory_order_acquire); // MB on
+            if (increment(curr_t) == head_cache) return false;
+        }
+
+        buffer[curr_t] = value;
+        tail.store(increment(curr_t), std::memory_order_release); // MB off
+
+        return true;
+    }
+
+    bool pop(T& value) {
+        const std::size_t curr_h = head.load(std::memory_order_relaxed);
+
+        if (curr_h == tail_cache) {
+            tail_cache = tail.load(std::memory_order_acquire); // MB on
+            if (curr_h == tail_cache) return false;
+        }
+
+        value = buffer[curr_h];
+        head.store(increment(curr_h), std::memory_order_release); // MB off
+
+        return true;
+    }
+
+private:
+    T buffer[Capacity];
+
+    // Producer's group
+    alignas(CacheLine) std::atomic<std::size_t> tail{0};
+    std::size_t head_cache{0}; // local
+
+    // Consumer's group
+    alignas(CacheLine) std::atomic<std::size_t> head{0};
+    std::size_t tail_cache{0}; // local
 };

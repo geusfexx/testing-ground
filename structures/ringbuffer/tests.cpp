@@ -9,14 +9,16 @@ void run_test(Buffer& pool, long long iterations) {
 
     std::thread producer([&]() {
         for (long long i = 0; i < iterations; ++i) {
-            while (!pool.push(i));
+            while (!pool.push(i)) // std::this_thread::yield() // turning the rules upside down
+            ;
         }
     });
 
     std::thread consumer([&]() {
         long long val;
         for (long long i = 0; i < iterations; ++i) {
-            while (!pool.pop(val));
+            while (!pool.pop(val)) // std::this_thread::yield() // turning the rules upside down
+            ;
         }
     });
 
@@ -29,10 +31,14 @@ void run_test(Buffer& pool, long long iterations) {
 }
 
 int main() {
-    const long long iterations = 1e7;
-    const std::size_t capacity = 1024;
+    const long long iterations = 1e8;
+    const std::size_t capacity = 4 * 1024;
 
-    std::cout << "Testing FastSPSC RingBuffer..." << std::endl;
+    std::cout << "Testing UltraFastSPSC RingBuffer..." << std::endl;
+    SPSC_RingBufferUltraFast<long long, capacity> ultrafast;
+    run_test(ultrafast, iterations);
+
+    std::cout << "\nTesting FastSPSC RingBuffer..." << std::endl;
     SPSC_RingBufferFast<long long, capacity> fast;
     run_test(fast, iterations);
 
