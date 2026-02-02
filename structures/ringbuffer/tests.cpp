@@ -9,7 +9,7 @@ void run_test(Buffer& pool, long long iterations) {
 
     std::thread producer([&]() {
         for (long long i = 0; i < iterations; ++i) {
-            while (!pool.push(i))  std::this_thread::yield() // turning the rules upside down
+            while (!pool.push(i)) // std::this_thread::yield() // turning the rules upside down
             ;
         }
     });
@@ -17,7 +17,7 @@ void run_test(Buffer& pool, long long iterations) {
     std::thread consumer([&]() {
         long long val;
         for (long long i = 0; i < iterations; ++i) {
-            while (!pool.pop(val))  std::this_thread::yield() // turning the rules upside down
+            while (!pool.pop(val)) // std::this_thread::yield() // turning the rules upside down
             ;
         }
     });
