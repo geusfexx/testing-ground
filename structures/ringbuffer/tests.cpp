@@ -30,7 +30,8 @@ void run_test(Buffer& pool, long long iterations) {
     std::cout << "Time: " << diff.count() << " s \nOps/sec: " << (iterations / diff.count()) / 1e6 << " M\n";
 }
 
-int main() {
+int main()
+{
     const long long iterations = 1e8;
     const std::size_t capacity = 4 * 1024;
 
