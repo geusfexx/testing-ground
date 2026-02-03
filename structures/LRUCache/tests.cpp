@@ -43,13 +43,20 @@ void run_test(Cache& cache, long long iterations) {
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
 
-    std::cout << "Time: " << diff.count() << " s \nOps/sec: " << ((reader_count + writer_count ) * iterations / diff.count()) / 1e6 << " M\n";
+    std::cout << "Time: " << diff.count() << " s \nOps/sec: " << ((reader_count + writer_count ) * iterations / diff.count()) / 1e6 << " M\n\n";
 }
 
 int main() {
 
     {
+        std::cout << "Testing LRUCacheSlow..." << std::endl;
         LRUCacheSlow<int, int, 100> cache;
+        run_test(cache, iterations);
+    }
+    
+    {
+        std::cout << "Testing LRUCacheSpin..." << std::endl;
+        LRUCacheSpin<int, int, 100> cache;
         run_test(cache, iterations);
     }
 
