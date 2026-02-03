@@ -2,9 +2,10 @@
 #include <unordered_map>
 #include <list>
 
-template <typename KeyType, typename ValueType>
+template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
 class LRUCache {
 
+    static_assert(Capacity > 0);
     using cacheList = std::list<std::pair<KeyType, ValueType>>;
     using cacheMap = std::unordered_map<KeyType, typename cacheList::iterator>;
     
@@ -13,7 +14,7 @@ class LRUCache {
     }
 
 public:
-    LRUCache(size_t cap) : _capacity(cap) {}
+    LRUCache(size_t cap) {}
 
     std::optional<ValueType> get(KeyType key) {
         auto it = _collection.find(key);
@@ -28,7 +29,7 @@ public:
             it->second->second = value;
             refresh(it);
         } else {
-            if (_freq_list.size() == _capacity) {
+            if (_freq_list.size() == Capacity) {
                 _collection.erase(_freq_list.back().first);
                 _freq_list.pop_back();
             }
@@ -38,7 +39,6 @@ public:
     }
 
 private:
-    size_t      _capacity;
     cacheList   _freq_list;         // key, value
     cacheMap    _collection;        // key, cacheList::iterator
 };
