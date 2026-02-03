@@ -3,7 +3,7 @@
 
 int main()
 {
-    LRUCache<int, double, 2> lru(2);
+    LRUCache<int, double, 2> lru;
 
     lru.put(1, 1.1);
     lru.put(2, 2.5);
