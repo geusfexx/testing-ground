@@ -1,9 +1,10 @@
 #include <optional>
 #include <unordered_map>
 #include <list>
+#include <mutex>
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
-class LRUCache {
+class LRUCacheSlow {
 
     static_assert(Capacity > 0);
 
@@ -15,9 +16,10 @@ class LRUCache {
     }
 
 public:
-    explicit LRUCache() {_collection.reserve(Capacity);}
+    explicit LRUCacheSlow() { _collection.reserve(Capacity); }
 
     std::optional<ValueType> get(const KeyType& key) noexcept {
+        std::lock_guard<std::mutex> lock(_mtx);
         auto it = _collection.find(key);
         if (it == _collection.end()) return {};
         refresh(it);
@@ -25,6 +27,7 @@ public:
     }
 
     void put(const KeyType& key, ValueType value) {
+        std::lock_guard<std::mutex> lock(_mtx);
         auto it = _collection.find(key);
         if (it != _collection.end()) {
             it->second->second = std::move(value);
@@ -40,6 +43,7 @@ public:
     }
 
 private:
+    std::mutex  _mtx;
     cacheList   _freq_list;         // key, value
     cacheMap    _collection;        // key, cacheList::iterator
 };
