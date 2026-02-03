@@ -60,6 +60,12 @@ int main() {
         run_test(cache, iterations);
     }
 
+    {
+        std::cout << "Testing LRUCacheAccumulative..." << std::endl;
+        LRUCacheAccumulative<int, int, 100> cache;
+        run_test(cache, iterations);
+    }
+
     std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl;
 
     return 0;
