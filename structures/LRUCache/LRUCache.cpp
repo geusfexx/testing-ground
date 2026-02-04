@@ -2,6 +2,7 @@
 #include <unordered_map>
 #include <list>
 #include <mutex>
+#include <shared_mutex>
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
 class LRUCacheSlow {
@@ -113,29 +114,36 @@ private:
 *           division using bitwise "AND"
 */
 template <typename T, std::size_t Capacity>
-class SPSC_RingBufferUltraFast {
+class MPSC_RingBufferUltraFast {
     
     static constexpr std::size_t CacheLine = 64; // Some hardcode :)
     static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
-
-    std::size_t increment(std::size_t i) const noexcept {
-        if constexpr (isPowerOfTwo(Capacity)) return (i + 1) & (Capacity - 1);
-        else return (i + 1) % Capacity;
-    }
+    static constexpr std::size_t Mask = Capacity - 1;
+    static_assert(isPowerOfTwo(Capacity), "Capacity must be power of 2");
 
 public:
+    bool isItTime() {
+        return (tail - head > (Capacity / 2));
+    }
+
     bool push(const T& value) {
-        const std::size_t curr_t = tail.load(std::memory_order_relaxed);
+        std::size_t curr_t = tail.load(std::memory_order_relaxed);
+        while (true) { // CAS
+            if (((curr_t + 1) & Mask) == head_cache) {
+                head_cache = head.load(std::memory_order_acquire);
+                if (((curr_t + 1) & Mask) == head_cache) {
+                    return false;
+                }
+            }
 
-        if (increment(curr_t) == head_cache) {
-            head_cache = head.load(std::memory_order_acquire); // MB on
-            if (increment(curr_t) == head_cache) return false;
+            // Write
+            if (tail.compare_exchange_weak(curr_t, (curr_t + 1) & Mask,
+                                         std::memory_order_release,         // MB off
+                                         std::memory_order_relaxed)) {
+                buffer[curr_t] = value;
+                return true;
+            }
         }
-
-        buffer[curr_t] = value;
-        tail.store(increment(curr_t), std::memory_order_release); // MB off
-
-        return true;
     }
 
     bool pop(T& value) {
@@ -147,7 +155,7 @@ public:
         }
 
         value = buffer[curr_h];
-        head.store(increment(curr_h), std::memory_order_release); // MB off
+        head.store((curr_h + 1) & Mask, std::memory_order_release); // MB off
 
         return true;
     }
@@ -164,9 +172,14 @@ private:
     std::size_t tail_cache{0}; // local
 };
 
-// FIXME    free(): invalid pointer // It needs to avoid segfault by invalidating iterators
-// TODO     Fix by ordinary mutex, by MPMC RBuffer or ...
 
+// TODO     there are some points to optimize left. For example:
+//          sharding, changin get() logic or using flat map
+//          I guess, Adaptive Locking / Dynamic Policy Switching may be useful,
+//          but it isn't needed without factual demands
+//
+// TODO     sharding
+// TODO     using flat map
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
 class LRUCacheAccumulative {
 
@@ -174,13 +187,13 @@ class LRUCacheAccumulative {
 
     using cacheList = std::list<std::pair<KeyType, ValueType>>;
     using cacheMap = std::unordered_map<KeyType, typename cacheList::iterator>;
-    using ringBuffer = SPSC_RingBufferUltraFast<KeyType, 512>;
+    using ringBuffer = MPSC_RingBufferUltraFast<KeyType, 256>;
 
 private:    
     void apply_updates() {
 
         KeyType key_to_refresh;
-        while (_update_buffer.pop(key_to_refresh)) {
+        while (_update_buffer.pop(key_to_refresh)) { // It is safe because value is stored in _collection
             auto it = _collection.find(key_to_refresh);
             if (it != _collection.end()) {
                 _freq_list.splice(_freq_list.begin(), _freq_list, it->second);
@@ -192,6 +205,8 @@ public:
     explicit LRUCacheAccumulative() { _collection.reserve(Capacity); }
 
     std::optional<ValueType> get(const KeyType& key) noexcept {
+        std::shared_lock lock(_rw_mtx);
+
         auto it = _collection.find(key);
         if (it == _collection.end()) return {};
 
@@ -203,15 +218,19 @@ public:
     }
 
     void put(const KeyType& key, ValueType value) {
-        std::unique_lock<std::mutex> lock(_map_mtx); // Hotfix
+        std::unique_lock<std::shared_mutex> lock(_rw_mtx); // Hotfix
 
-        apply_updates(); // Apply cummulative updates by writers
+        if (_update_buffer.isItTime()) {
+            apply_updates(); // Apply cummulative updates by writers
+        }
 
         auto it = _collection.find(key);
         if (it != _collection.end()) {
             it->second->second = std::move(value);
         } else {
             if (_freq_list.size() == Capacity) {
+                apply_updates(); // Emergency apply
+
                 _collection.erase(_freq_list.back().first);
                 _freq_list.pop_back();
             }
@@ -221,9 +240,9 @@ public:
     }
 
 private:
-    ringBuffer  _update_buffer;
-    cacheList   _freq_list;         // key, value
-    cacheMap    _collection;        // key, cacheList::iterator
-    std::mutex  _map_mtx;           // Hotfix
+    ringBuffer          _update_buffer;
+    cacheList           _freq_list;         // key, value
+    cacheMap            _collection;        // key, cacheList::iterator
+    std::shared_mutex   _rw_mtx;            // Hotfix
 };
 

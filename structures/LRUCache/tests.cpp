@@ -7,13 +7,12 @@
 #include "LRUCache.cpp"
 
 const int iterations = 1e5;
-const int key_range = 200;
-const int reader_count = 4;
-const int writer_count = 2;
+const int key_range = 2000;
     
-template<typename Cache>
+template<typename Cache, int Readers, int Writers>
 void run_test(Cache& cache, long long iterations) {
     auto start = std::chrono::high_resolution_clock::now();
+    int misses = 0;
 
     std::vector<std::thread> threads;
 
@@ -21,7 +20,7 @@ void run_test(Cache& cache, long long iterations) {
         std::mt19937 gen(std::random_device{}());
         std::uniform_int_distribution<> dist(0, key_range);
         for (long long i = 0; i < iterations; ++i) {
-            cache.get(dist(gen));
+            if (!cache.get(dist(gen))) ++misses; // Very approximately :)
             //std::this_thread::yield(); // turning the rules upside down
         }
     };
@@ -35,38 +34,101 @@ void run_test(Cache& cache, long long iterations) {
         }
     };
 
-    for (int i = 0; i < reader_count; ++i) threads.emplace_back(reader);
-    for (int i = 0; i < writer_count; ++i) threads.emplace_back(writer);
+    for (int i = 0; i < Readers; ++i) threads.emplace_back(reader);
+    for (int i = 0; i < Writers; ++i) threads.emplace_back(writer);
 
     for (auto& t : threads) t.join();
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
 
-    std::cout << "Time: " << diff.count() << " s \nOps/sec: " << ((reader_count + writer_count ) * iterations / diff.count()) / 1e6 << " M\n\n";
+    std::cout << "Time: " << diff.count() << " s \nOps/sec: "
+              << ((Readers + Writers ) * iterations / diff.count()) / 1e6 << " M"
+              << "Misses: " << misses << "\n\n";
 }
 
 int main() {
 
     {
-        std::cout << "Testing LRUCacheSlow..." << std::endl;
-        LRUCacheSlow<int, int, 100> cache;
-        run_test(cache, iterations);
-    }
-    
-    {
-        std::cout << "Testing LRUCacheSpin..." << std::endl;
-        LRUCacheSpin<int, int, 100> cache;
-        run_test(cache, iterations);
+        const int reader_count = 4;
+        const int writer_count = 2;
+        const int cache_size = 1024;
+
+        std::cout << "Testing scenario: readers - " << reader_count << " writers - " << writer_count << std::endl << std::endl;
+        {
+            std::cout << "Testing LRUCacheSlow..." << std::endl;
+            LRUCacheSlow<int, int, cache_size> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
+
+        {
+            std::cout << "Testing LRUCacheSpin..." << std::endl;
+            LRUCacheSpin<int, int, cache_size> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
+
+        {
+            std::cout << "Testing LRUCacheAccumulative..." << std::endl;
+            LRUCacheAccumulative<int, int, cache_size> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
+
+        std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl << std::endl;
     }
 
     {
-        std::cout << "Testing LRUCacheAccumulative..." << std::endl;
-        LRUCacheAccumulative<int, int, 100> cache;
-        run_test(cache, iterations);
+        const int reader_count = 2;
+        const int writer_count = 12;
+        const int cache_size = 1024;
+
+        std::cout << "Testing scenario: readers - " << reader_count << " writers - " << writer_count << std::endl << std::endl;
+        {
+            std::cout << "Testing LRUCacheSlow..." << std::endl;
+            LRUCacheSlow<int, int, cache_size> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
+
+        {
+            std::cout << "Testing LRUCacheSpin..." << std::endl;
+            LRUCacheSpin<int, int, cache_size> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
+
+        {
+            std::cout << "Testing LRUCacheAccumulative..." << std::endl;
+            LRUCacheAccumulative<int, int, cache_size> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
+
+        std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl << std::endl;
     }
 
-    std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl;
+    {
+        const int reader_count = 24;
+        const int writer_count = 4;
+        const int cache_size = 1024;
+
+        std::cout << "Testing scenario: readers - " << reader_count << " writers - " << writer_count << std::endl << std::endl;
+        {
+            std::cout << "Testing LRUCacheSlow..." << std::endl;
+            LRUCacheSlow<int, int, cache_size> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
+
+        {
+            std::cout << "Testing LRUCacheSpin..." << std::endl;
+            LRUCacheSpin<int, int, cache_size> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
+
+        {
+            std::cout << "Testing LRUCacheAccumulative..." << std::endl;
+            LRUCacheAccumulative<int, int, cache_size> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
+
+        std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl << std::endl;
+    }
 
     return 0;
 }
