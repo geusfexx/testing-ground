@@ -4,8 +4,21 @@
 #include <mutex>
 #include <shared_mutex>
 
+class NonCopyableNonMoveable {
+public:
+    NonCopyableNonMoveable() = default;
+
+    NonCopyableNonMoveable(const NonCopyableNonMoveable&) = delete;
+    NonCopyableNonMoveable& operator=(const NonCopyableNonMoveable&) = delete;
+
+    NonCopyableNonMoveable(NonCopyableNonMoveable&&) = delete;
+    NonCopyableNonMoveable& operator=(NonCopyableNonMoveable&&) = delete;
+protected:
+    ~NonCopyableNonMoveable() = default;
+};
+
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
-class LRUCacheSlow {
+class LRUCacheSlow : private NonCopyableNonMoveable{    // Use EBO
 
     static_assert(Capacity > 0);
 
@@ -17,7 +30,7 @@ class LRUCacheSlow {
     }
 
 public:
-    explicit LRUCacheSlow() { _collection.reserve(Capacity); }
+    LRUCacheSlow() { _collection.reserve(Capacity); }
 
     std::optional<ValueType> get(const KeyType& key) noexcept {
         std::lock_guard<std::mutex> lock(_mtx);
@@ -50,7 +63,7 @@ private:
 };
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
-class LRUCacheSpin {
+class LRUCacheSpin : private NonCopyableNonMoveable{    // Use EBO
 
     static_assert(Capacity > 0);
 
@@ -69,7 +82,7 @@ private:
     }
 
 public:
-    explicit LRUCacheSpin() { _collection.reserve(Capacity); }
+    LRUCacheSpin() { _collection.reserve(Capacity); }
 
     std::optional<ValueType> get(const KeyType& key) noexcept {
         _lock.lock();
@@ -114,7 +127,7 @@ private:
 *           division using bitwise "AND"
 */
 template <typename T, std::size_t Capacity>
-class MPSC_RingBufferUltraFast {
+class MPSC_RingBufferUltraFast : private NonCopyableNonMoveable{    // Use EBO
     
     static constexpr std::size_t CacheLine = 64; // Some hardcode :)
     static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
@@ -181,13 +194,13 @@ private:
 // TODO     sharding
 // TODO     using flat map
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
-class LRUCacheAccumulative {
+class LRUCacheAccumulative : private NonCopyableNonMoveable{    // Use EBO
 
     static_assert(Capacity > 0);
 
     using cacheList = std::list<std::pair<KeyType, ValueType>>;
     using cacheMap = std::unordered_map<KeyType, typename cacheList::iterator>;
-    using ringBuffer = MPSC_RingBufferUltraFast<KeyType, 256>;
+    using ringBuffer = MPSC_RingBufferUltraFast<KeyType, Capacity / 4>;
 
 private:    
     void apply_updates() {
@@ -202,7 +215,7 @@ private:
     }
 
 public:
-    explicit LRUCacheAccumulative() { _collection.reserve(Capacity); }
+    LRUCacheAccumulative() { _collection.reserve(Capacity); }
 
     std::optional<ValueType> get(const KeyType& key) noexcept {
         std::shared_lock lock(_rw_mtx);
@@ -218,7 +231,7 @@ public:
     }
 
     void put(const KeyType& key, ValueType value) {
-        std::unique_lock<std::shared_mutex> lock(_rw_mtx); // Hotfix
+        std::unique_lock<std::shared_mutex> lock(_rw_mtx);
 
         if (_update_buffer.isItTime()) {
             apply_updates(); // Apply cummulative updates by writers
@@ -243,6 +256,6 @@ private:
     ringBuffer          _update_buffer;
     cacheList           _freq_list;         // key, value
     cacheMap            _collection;        // key, cacheList::iterator
-    std::shared_mutex   _rw_mtx;            // Hotfix
+    std::shared_mutex   _rw_mtx;
 };
 

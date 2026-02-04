@@ -6,7 +6,7 @@
 #include <random>
 #include "LRUCache.cpp"
 
-const int iterations = 1e5;
+const int iterations = 1e6;
 const int key_range = 2000;
     
 template<typename Cache, int Readers, int Writers>
@@ -43,7 +43,7 @@ void run_test(Cache& cache, long long iterations) {
     std::chrono::duration<double> diff = end - start;
 
     std::cout << "Time: " << diff.count() << " s \nOps/sec: "
-              << ((Readers + Writers ) * iterations / diff.count()) / 1e6 << " M"
+              << ((Readers + Writers ) * iterations / diff.count()) / 1e6 << " M\n"
               << "Misses: " << misses << "\n\n";
 }
 
