@@ -19,8 +19,11 @@ protected:
 };
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
-class LRUCacheSlow : private NonCopyableNonMoveable{    // Use EBO
+class StrictLRU : private NonCopyableNonMoveable{    // Use EBO
+public:
+    static constexpr const char* name() noexcept { return "StrictLRU"; }
 
+private:
     static_assert(Capacity > 0);
 
     using cacheList = std::list<std::pair<KeyType, ValueType>>;
@@ -31,7 +34,7 @@ class LRUCacheSlow : private NonCopyableNonMoveable{    // Use EBO
     }
 
 public:
-    LRUCacheSlow() { _collection.reserve(Capacity); }
+    StrictLRU() { _collection.reserve(Capacity); }
 
     std::optional<ValueType> get(const KeyType& key) noexcept {
         std::lock_guard<std::mutex> lock(_mtx);
@@ -64,8 +67,11 @@ private:
 };
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
-class LRUCacheSpin : private NonCopyableNonMoveable{    // Use EBO
+class SpinlockedLRU : private NonCopyableNonMoveable{    // Use EBO
+public:
+    static constexpr const char* name() noexcept { return "SpinlockedLRU"; }
 
+private:
     static_assert(Capacity > 0);
 
     using cacheList = std::list<std::pair<KeyType, ValueType>>;
@@ -83,7 +89,7 @@ private:
     }
 
 public:
-    LRUCacheSpin() { _collection.reserve(Capacity); }
+    SpinlockedLRU() { _collection.reserve(Capacity); }
 
     std::optional<ValueType> get(const KeyType& key) noexcept {
         _lock.lock();
@@ -128,8 +134,11 @@ private:
 *           division using bitwise "AND"
 */
 template <typename T, std::size_t Capacity>
-class MPSC_RingBufferUltraFast : private NonCopyableNonMoveable{    // Use EBO
-    
+class MPSC_TraceBuffer : private NonCopyableNonMoveable{    // Use EBO
+public:
+    static constexpr const char* name() noexcept { return "MPSC_TraceBuffer"; }
+
+private:
     static constexpr std::size_t CacheLine = 64; // Some hardcode :)
     static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
     static constexpr std::size_t Mask = Capacity - 1;
@@ -195,15 +204,18 @@ private:
 // TODO     sharding    ******      Done
 // TODO     using flat map
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
-class LRUCacheAccumulative : private NonCopyableNonMoveable{    // Use EBO
+class DeferredLRU : private NonCopyableNonMoveable{    // Use EBO
+public:
+    static constexpr const char* name() noexcept { return "DeferredLRU"; }
 
+private:
     static_assert(Capacity > 0);
 
     using cacheList = std::list<std::pair<KeyType, ValueType>>;
     using cacheMap = std::unordered_map<KeyType, typename cacheList::iterator>;
-    using ringBuffer = MPSC_RingBufferUltraFast<KeyType, Capacity / 4>;
+    using ringBuffer = MPSC_TraceBuffer<KeyType, Capacity / 4>;
 
-private:    
+private:
     void apply_updates() {
 
         KeyType key_to_refresh;
@@ -216,7 +228,7 @@ private:
     }
 
 public:
-    LRUCacheAccumulative() { _collection.reserve(Capacity); }
+    DeferredLRU() { _collection.reserve(Capacity); }
 
     std::optional<ValueType> get(const KeyType& key) noexcept {
         std::shared_lock lock(_rw_mtx);
@@ -261,7 +273,7 @@ private:
 };
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
-class FlatMapOALP : private NonCopyableNonMoveable { // Open Addressing table with Linear Probing
+class LinearFlatMap : private NonCopyableNonMoveable { // Open Addressing table with Linear Probing
     struct Entry {
         KeyType key;
         ValueType value;
@@ -269,13 +281,17 @@ class FlatMapOALP : private NonCopyableNonMoveable { // Open Addressing table wi
         bool deleted = false;   // Tombstone
     };
 
+public:
+    static constexpr const char* name() noexcept { return "LinearFlatMap"; }
+
+private:
     static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
     static_assert(isPowerOfTwo(Capacity), "Capacity must be power of 2");
     static constexpr std::size_t TableSize = Capacity * 2; // Load factor 0.5
     static constexpr std::size_t Mask = TableSize - 1;
 
 public:
-    FlatMapOALP() : _table(std::make_unique<Entry[]>(TableSize)) {}
+    LinearFlatMap() : _table(std::make_unique<Entry[]>(TableSize)) {}
 
     ValueType* find(const KeyType& key) const {
         std::size_t hash = std::hash<KeyType>{}(key) & Mask;
@@ -340,13 +356,15 @@ private:
 };
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
-class LRUCacheAccumulativeFM : private NonCopyableNonMoveable{    // Use EBO
-
+class DeferredFlatLRU : private NonCopyableNonMoveable{    // Use EBO
+public:
+    static constexpr const char* name() noexcept { return "DeferredFlatLRU"; }
+private:
     static_assert(Capacity > 0);
 
     using cacheList = std::list<std::pair<KeyType, ValueType>>;
-    using cacheMap = FlatMapOALP<KeyType, typename cacheList::iterator, Capacity>;
-    using ringBuffer = MPSC_RingBufferUltraFast<KeyType, Capacity / 4>;
+    using cacheMap = LinearFlatMap<KeyType, typename cacheList::iterator, Capacity>;
+    using ringBuffer = MPSC_TraceBuffer<KeyType, Capacity / 4>;
 
 private:
     void apply_updates() {
@@ -361,7 +379,7 @@ private:
     }
 
 public:
-    LRUCacheAccumulativeFM() { }
+    DeferredFlatLRU() { }
 
     std::optional<ValueType> get(const KeyType& key) noexcept {
         std::shared_lock lock(_rw_mtx);
@@ -411,23 +429,29 @@ template <template<typename, typename, std::size_t> class CacheImpl,
     typename KeyType, typename ValueType,
     std::size_t TotalCapacity = 1024,
     std::size_t ShardsCount = 16>
-class ShardedLRUCache : private NonCopyableNonMoveable {
+class ShardedCache : private NonCopyableNonMoveable {
+public:
+    static constexpr std::string name() noexcept {
+        return "Sharded<" + std::string(Cache::name()) + ">";
+    }
+
+private:
     static constexpr std::size_t Mask = ShardsCount - 1;
     static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
     static_assert(TotalCapacity > 0, "TotalCapacity must be > 0");
     static_assert(ShardsCount > 0, "ShardsCount must be > 0");
     static_assert(isPowerOfTwo(ShardsCount), "ShardsCount must be power of 2");
 
-    using lruCache = CacheImpl<KeyType, ValueType, TotalCapacity / ShardsCount>;
+    using Cache = CacheImpl<KeyType, ValueType, TotalCapacity / ShardsCount>;
 
     std::size_t get_shard_idx(const KeyType& key) const noexcept {
         return std::hash<KeyType>{}(key) & Mask;
     }
 
 public:
-    ShardedLRUCache() : _shards(ShardsCount) {
+    ShardedCache() : _shards(ShardsCount) {
         for (auto& shard : _shards) {
-            shard = std::make_unique<lruCache>();
+            shard = std::make_unique<Cache>();
         }
     }
 
@@ -440,5 +464,5 @@ public:
     }
 
 private:
-    std::vector<std::unique_ptr<lruCache>> _shards;
+    std::vector<std::unique_ptr<Cache>> _shards;
 };
