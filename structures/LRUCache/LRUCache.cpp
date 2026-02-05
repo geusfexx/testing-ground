@@ -260,13 +260,13 @@ private:
     std::shared_mutex   _rw_mtx;
 };
 
-template <typename Key, typename Value, std::size_t Capacity>
+template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
 class FlatMapOALP : private NonCopyableNonMoveable { // Open Addressing table with Linear Probing
     struct Entry {
-        Key key;
-        Value value;
+        KeyType key;
+        ValueType value;
         bool occupied = false;
-        bool deleted = false; // Tombstone
+        bool deleted = false;   // Tombstone
     };
 
     static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
@@ -275,23 +275,68 @@ class FlatMapOALP : private NonCopyableNonMoveable { // Open Addressing table wi
     static constexpr std::size_t Mask = TableSize - 1;
 
 public:
-    FlatMapOALP() { table = new Entry[TableSize]; }
-    ~FlatMapOALP() { delete[] table; }
+    FlatMapOALP() : _table(std::make_unique<Entry[]>(TableSize)) {}
 
-    Value* find(const Key& key) {
+    ValueType* find(const KeyType& key) const {
+        std::size_t hash = std::hash<KeyType>{}(key) & Mask;
 
+        for (std::size_t i = 0; i < TableSize; ++i) {
+            std::size_t idx = (hash + i) & Mask;
+
+            if (!_table[idx].occupied && !_table[idx].deleted) return nullptr;
+            if (_table[idx].occupied && _table[idx].key == key) return &_table[idx].value;
+        }
+
+        return nullptr;
     }
 
-    void insert(const Key& key, Value val) {
+    void insert(const KeyType& key, ValueType val) {
+        std::size_t hash = std::hash<KeyType>{}(key) & Mask;
+        int first_del_idx_wth_same_key = -1;
 
+        for (std::size_t i = 0; i < TableSize; ++i) {
+            std::size_t idx = (hash + i) & Mask;
+
+            if (_table[idx].occupied && _table[idx].key == key) {
+                _table[idx].value = std::move(val);
+                return;
+            }
+
+            if (!_table[idx].occupied) {
+                std::size_t target = (first_del_idx_wth_same_key != -1) ? first_del_idx_wth_same_key : idx;
+
+                _table[target].key = key;
+                _table[target].value = std::move(val);
+                _table[target].occupied = true;
+                _table[target].deleted = false;
+                return;
+            }
+
+            if (_table[idx].deleted && first_del_idx_wth_same_key == -1) first_del_idx_wth_same_key = idx;
+        }
+
+        return;
     }
 
-    void erase(const Key& key) {
+    void erase(const KeyType& key) {
+        std::size_t hash = std::hash<KeyType>{}(key) & Mask;
 
+        for (std::size_t i = 0; i < TableSize; ++i) {
+            std::size_t idx = (hash + i) & Mask;
+
+            if (!_table[idx].occupied && !_table[idx].deleted) return;
+            if (_table[idx].occupied && _table[idx].key == key) {
+                _table[idx].occupied = false;
+                _table[idx].deleted = true;
+                return;
+            }
+        }
+
+        return;
     }
 
 private:
-    Entry* table;
+    std::unique_ptr<Entry[]> _table;
 };
 
 //  Wrapper for SharedLRU
