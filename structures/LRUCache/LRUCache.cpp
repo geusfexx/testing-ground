@@ -262,8 +262,8 @@ private:
 
 //  Wrapper for SharedLRU
 template <template<typename, typename, std::size_t> class CacheImpl,
-    typename KeyType, typename ValueType, 
-    std::size_t TotalCapacity = 1024, 
+    typename KeyType, typename ValueType,
+    std::size_t TotalCapacity = 1024,
     std::size_t ShardsCount = 16>
 class ShardedLRUCache : private NonCopyableNonMoveable {
     static constexpr std::size_t Mask = ShardsCount - 1;
@@ -271,7 +271,7 @@ class ShardedLRUCache : private NonCopyableNonMoveable {
     static_assert(TotalCapacity > 0, "TotalCapacity must be > 0");
     static_assert(ShardsCount > 0, "ShardsCount must be > 0");
     static_assert(isPowerOfTwo(ShardsCount), "ShardsCount must be power of 2");
-    
+
     using lruCache = CacheImpl<KeyType, ValueType, TotalCapacity / ShardsCount>;
 
     std::size_t get_shard_idx(const KeyType& key) const {

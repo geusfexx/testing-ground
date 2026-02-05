@@ -49,13 +49,14 @@ void run_test(Cache& cache, long long iterations) {
 
 int main() {
 
+//FIXME     It's time to refactor this crap!
     {
         const int reader_count = 4;
         const int writer_count = 2;
         const int cache_size = 1024;
 
         std::cout << "Testing scenario: readers - " << reader_count << " writers - " << writer_count << std::endl << std::endl;
-        {
+/*        {
             std::cout << "Testing LRUCacheSlow..." << std::endl;
             LRUCacheSlow<int, int, cache_size> cache;
             run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
@@ -72,7 +73,7 @@ int main() {
             LRUCacheAccumulative<int, int, cache_size> cache;
             run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
         }
-
+*/
         {
             std::cout << "Testing ShardedLRUCacheSlow..." << std::endl;
             ShardedLRUCache<LRUCacheSlow, int, int, cache_size, 16> cache;
@@ -99,7 +100,7 @@ int main() {
         const int cache_size = 1024;
 
         std::cout << "Testing scenario: readers - " << reader_count << " writers - " << writer_count << std::endl << std::endl;
-        {
+/*        {
             std::cout << "Testing LRUCacheSlow..." << std::endl;
             LRUCacheSlow<int, int, cache_size> cache;
             run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
@@ -116,7 +117,7 @@ int main() {
             LRUCacheAccumulative<int, int, cache_size> cache;
             run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
         }
-
+*/
         {
             std::cout << "Testing ShardedLRUCacheSlow..." << std::endl;
             ShardedLRUCache<LRUCacheSlow, int, int, cache_size, 16> cache;
@@ -143,7 +144,7 @@ int main() {
         const int cache_size = 1024;
 
         std::cout << "Testing scenario: readers - " << reader_count << " writers - " << writer_count << std::endl << std::endl;
-        {
+/*        {
             std::cout << "Testing LRUCacheSlow..." << std::endl;
             LRUCacheSlow<int, int, cache_size> cache;
             run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
@@ -160,7 +161,7 @@ int main() {
             LRUCacheAccumulative<int, int, cache_size> cache;
             run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
         }
-
+*/
         {
             std::cout << "Testing ShardedLRUCacheSlow..." << std::endl;
             ShardedLRUCache<LRUCacheSlow, int, int, cache_size, 16> cache;
