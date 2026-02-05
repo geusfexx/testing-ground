@@ -3,6 +3,7 @@
 #include <list>
 #include <mutex>
 #include <shared_mutex>
+#include <memory>
 
 class NonCopyableNonMoveable {
 public:
@@ -187,11 +188,11 @@ private:
 
 
 // TODO     there are some points to optimize left. For example:
-//          sharding, changin get() logic or using flat map
+//          sharding, changing get() logic or using flat map
 //          I guess, Adaptive Locking / Dynamic Policy Switching may be useful,
 //          but it isn't needed without factual demands
 //
-// TODO     sharding
+// TODO     sharding    ******      Done
 // TODO     using flat map
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
 class LRUCacheAccumulative : private NonCopyableNonMoveable{    // Use EBO
@@ -259,3 +260,39 @@ private:
     std::shared_mutex   _rw_mtx;
 };
 
+//  Wrapper for SharedLRU
+template <template<typename, typename, std::size_t> class CacheImpl,
+    typename KeyType, typename ValueType, 
+    std::size_t TotalCapacity = 1024, 
+    std::size_t ShardsCount = 16>
+class ShardedLRUCache : private NonCopyableNonMoveable {
+    static constexpr std::size_t Mask = ShardsCount - 1;
+    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
+    static_assert(TotalCapacity > 0, "TotalCapacity must be > 0");
+    static_assert(ShardsCount > 0, "ShardsCount must be > 0");
+    static_assert(isPowerOfTwo(ShardsCount), "ShardsCount must be power of 2");
+    
+    using lruCache = CacheImpl<KeyType, ValueType, TotalCapacity / ShardsCount>;
+
+    std::size_t get_shard_idx(const KeyType& key) const {
+        return std::hash<KeyType>{}(key) & Mask;
+    }
+
+public:
+    ShardedLRUCache() : _shards(ShardsCount) {
+        for (auto& shard : _shards) {
+            shard = std::make_unique<lruCache>();
+        }
+    }
+
+    std::optional<ValueType> get(const KeyType& key) noexcept {
+        return _shards[get_shard_idx(key)]->get(key);
+    }
+
+    void put(const KeyType& key, ValueType value) {
+        _shards[get_shard_idx(key)]->put(key, std::move(value));
+    }
+
+private:
+    std::vector<std::unique_ptr<lruCache>> _shards;
+};
