@@ -6,199 +6,97 @@
 #include <random>
 #include "LRUCache.cpp"
 
-const int iterations = 1e6;
-const int key_range = 1200;
-    
-template<typename Cache, int Readers, int Writers>
-void run_test(Cache& cache, long long iterations) {
-    auto start = std::chrono::high_resolution_clock::now();
-    int misses = 0;
+struct TestConfig {
+    int readers;
+    int writers;
+    int cache_size;
+    int key_range;
+    long long iterations;
+};
 
+template<typename Cache>
+void run_benchmark(const TestConfig& config) {
+    Cache cache;
+    std::vector<int> thread_misses(config.readers, 0);
     std::vector<std::thread> threads;
+    auto start = std::chrono::high_resolution_clock::now();
 
-    auto reader = [&]() {
-        std::mt19937 gen(std::random_device{}());
-        std::uniform_int_distribution<> dist(0, key_range);
-        for (long long i = 0; i < iterations; ++i) {
-            if (!cache.get(dist(gen))) ++misses; // Very approximately :)
-            //std::this_thread::yield(); // turning the rules upside down
-        }
-    };
+    std::cout << "Testing: " << Cache::name() << "..." << std::endl;
 
-    auto writer = [&]() {
-        std::mt19937 gen(std::random_device{}());
-        std::uniform_int_distribution<> dist(0, key_range);
-        for (long long i = 0; i < iterations; ++i) {
-            cache.put(dist(gen), dist(gen));
-            //std::this_thread::yield(); // turning the rules upside down
-        }
-    };
+    for (int i = 0; i < config.readers; ++i) {
+        threads.emplace_back([&cache, &config, &thread_misses, i]() {
+            std::mt19937 gen(std::random_device{}());
+            std::uniform_int_distribution<> dist(0, config.key_range);
+            int local_misses = 0;
 
-    for (int i = 0; i < Readers; ++i) threads.emplace_back(reader);
-    for (int i = 0; i < Writers; ++i) threads.emplace_back(writer);
+            for (long long j = 0; j < config.iterations; ++j) {
+                if (!cache.get(dist(gen))) local_misses++;
+            }
+            thread_misses[i] = local_misses;
+        });
+    }
+
+    for (int i = 0; i < config.writers; ++i) {
+        threads.emplace_back([&cache, &config]() {
+            std::mt19937 gen(std::random_device{}());
+            std::uniform_int_distribution<> dist(0, config.key_range);
+
+            for (long long j = 0; j < config.iterations; ++j) {
+                cache.put(dist(gen), dist(gen));
+            }
+        });
+    }
 
     for (auto& t : threads) t.join();
 
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
 
-    std::cout << "Time: " << diff.count() << " s \nOps/sec: "
-              << ((Readers + Writers ) * iterations / diff.count()) / 1e6 << " M\n"
-              << "Misses: " << misses << "\n\n";
+    long long total_misses = 0;
+    for (int m : thread_misses) total_misses += m;
+    double total_ops = (config.readers + config.writers) * config.iterations;
+
+    std::cout << "Time: " << diff.count() << " s \n"
+              << "Ops/sec: " << (total_ops / diff.count()) / 1e6 << " M\n"
+              << "Misses: " << total_misses << "\n\n";
 }
 
-int main() {
+template<typename... Caches>
+void execute_scenario(const TestConfig& config) {
+    std::cout << "================================================\n"
+              << "SCENARIO: Readers(" << config.readers << ") Writers(" << config.writers << ")\n"
+              << "CacheSize: " << config.cache_size << " KeyRange: " << config.key_range << "\n"
+              << "================================================\n" << std::endl;
 
-//FIXME     It's time to refactor this crap!
-    {
-        const int reader_count = 4;
-        const int writer_count = 2;
-        const int cache_size = 1024;
+    (run_benchmark<Caches>(config), ...);
 
-        std::cout << "Testing scenario: readers - " << reader_count << " writers - " << writer_count << std::endl << std::endl;
-/*        {
-            std::cout << "Testing LRUCacheSlow..." << std::endl;
-            LRUCacheSlow<int, int, cache_size> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
+    std::cout << "Done: " << (config.readers + config.writers) << " threads finished.\n" << std::endl;
+}
 
-        {
-            std::cout << "Testing LRUCacheSpin..." << std::endl;
-            LRUCacheSpin<int, int, cache_size> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
+int main()
+{
+    const long long iters = 1e6;
+    const int cache_sz = 1024;
+    const int k_range = 1200;
 
-        {
-            std::cout << "Testing LRUCacheAccumulative..." << std::endl;
-            LRUCacheAccumulative<int, int, cache_size> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-*/
-        {
-            std::cout << "Testing ShardedLRUCacheSlow..." << std::endl;
-            ShardedLRUCache<LRUCacheSlow, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
+    TestConfig read_heavy  = {24, 4, cache_sz, k_range, iters};
+    TestConfig write_heavy = {2, 12, cache_sz, k_range, iters};
+    TestConfig balanced    = {4, 2, cache_sz, k_range, iters};
 
-        {
-            std::cout << "Testing ShardedLRUCacheSpin..." << std::endl;
-            ShardedLRUCache<LRUCacheSpin, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
 
-        {
-            std::cout << "Testing ShardedLRUCacheAccumulative..." << std::endl;
-            ShardedLRUCache<LRUCacheAccumulative, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
+    using Slow = StrictLRU<int, int, cache_sz>;
+    using Spin = SpinlockedLRU<int, int, cache_sz>;
+    using Def  = DeferredLRU<int, int, cache_sz>;
+    using DefFM = DeferredFlatLRU<int, int, cache_sz>;
 
-        {
-            std::cout << "Testing ShardedLRUCacheAccumulativeFM..." << std::endl;
-            ShardedLRUCache<LRUCacheAccumulativeFM, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-        std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl << std::endl;
-    }
+    using S_Slow = ShardedCache<StrictLRU, int, int, cache_sz, 16>;
+    using S_Spin = ShardedCache<SpinlockedLRU, int, int, cache_sz, 16>;
+    using S_Def  = ShardedCache<DeferredLRU, int, int, cache_sz, 16>;
+    using S_DefFM = ShardedCache<DeferredFlatLRU, int, int, cache_sz, 16>;
 
-    {
-        const int reader_count = 2;
-        const int writer_count = 12;
-        const int cache_size = 1024;
-
-        std::cout << "Testing scenario: readers - " << reader_count << " writers - " << writer_count << std::endl << std::endl;
-/*        {
-            std::cout << "Testing LRUCacheSlow..." << std::endl;
-            LRUCacheSlow<int, int, cache_size> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-
-        {
-            std::cout << "Testing LRUCacheSpin..." << std::endl;
-            LRUCacheSpin<int, int, cache_size> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-
-        {
-            std::cout << "Testing LRUCacheAccumulative..." << std::endl;
-            LRUCacheAccumulative<int, int, cache_size> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-*/
-        {
-            std::cout << "Testing ShardedLRUCacheSlow..." << std::endl;
-            ShardedLRUCache<LRUCacheSlow, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-
-        {
-            std::cout << "Testing ShardedLRUCacheSpin..." << std::endl;
-            ShardedLRUCache<LRUCacheSpin, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-
-        {
-            std::cout << "Testing ShardedLRUCacheAccumulative..." << std::endl;
-            ShardedLRUCache<LRUCacheAccumulative, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-
-        {
-            std::cout << "Testing ShardedLRUCacheAccumulativeFM..." << std::endl;
-            ShardedLRUCache<LRUCacheAccumulativeFM, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-        std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl << std::endl;
-    }
-
-    {
-        const int reader_count = 24;
-        const int writer_count = 4;
-        const int cache_size = 1024;
-
-        std::cout << "Testing scenario: readers - " << reader_count << " writers - " << writer_count << std::endl << std::endl;
-/*        {
-            std::cout << "Testing LRUCacheSlow..." << std::endl;
-            LRUCacheSlow<int, int, cache_size> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-
-        {
-            std::cout << "Testing LRUCacheSpin..." << std::endl;
-            LRUCacheSpin<int, int, cache_size> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-
-        {
-            std::cout << "Testing LRUCacheAccumulative..." << std::endl;
-            LRUCacheAccumulative<int, int, cache_size> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-*/
-        {
-            std::cout << "Testing ShardedLRUCacheSlow..." << std::endl;
-            ShardedLRUCache<LRUCacheSlow, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-
-        {
-            std::cout << "Testing ShardedLRUCacheSpin..." << std::endl;
-            ShardedLRUCache<LRUCacheSpin, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-
-        {
-            std::cout << "Testing ShardedLRUCacheAccumulative..." << std::endl;
-            ShardedLRUCache<LRUCacheAccumulative, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-
-        {
-            std::cout << "Testing ShardedLRUCacheAccumulativeFM..." << std::endl;
-            ShardedLRUCache<LRUCacheAccumulativeFM, int, int, cache_size, 16> cache;
-            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
-        }
-        std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl << std::endl;
-    }
+    execute_scenario<Slow, Spin, Def, DefFM, S_Slow, S_Spin, S_Def, S_DefFM>(balanced);
+    execute_scenario<Slow, Spin, Def, DefFM, S_Slow, S_Spin, S_Def, S_DefFM>(write_heavy);
+    execute_scenario<Slow, Spin, Def, DefFM, S_Slow, S_Spin, S_Def, S_DefFM>(read_heavy);
 
     return 0;
 }
