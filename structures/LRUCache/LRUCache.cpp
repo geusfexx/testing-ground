@@ -260,6 +260,40 @@ private:
     std::shared_mutex   _rw_mtx;
 };
 
+template <typename Key, typename Value, std::size_t Capacity>
+class FlatMapOALP : private NonCopyableNonMoveable { // Open Addressing table with Linear Probing
+    struct Entry {
+        Key key;
+        Value value;
+        bool occupied = false;
+        bool deleted = false; // Tombstone
+    };
+
+    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
+    static_assert(isPowerOfTwo(Capacity), "Capacity must be power of 2");
+    static constexpr std::size_t TableSize = Capacity * 2; // Load factor 0.5
+    static constexpr std::size_t Mask = TableSize - 1;
+
+public:
+    FlatMapOALP() { table = new Entry[TableSize]; }
+    ~FlatMapOALP() { delete[] table; }
+
+    Value* find(const Key& key) {
+
+    }
+
+    void insert(const Key& key, Value val) {
+
+    }
+
+    void erase(const Key& key) {
+
+    }
+
+private:
+    Entry* table;
+};
+
 //  Wrapper for SharedLRU
 template <template<typename, typename, std::size_t> class CacheImpl,
     typename KeyType, typename ValueType,
