@@ -74,8 +74,8 @@ class LRUCacheSpin : private NonCopyableNonMoveable{    // Use EBO
 private:    
     struct SpinLock {
         std::atomic_flag flag = ATOMIC_FLAG_INIT;
-        void lock() { while (flag.test_and_set(std::memory_order_acquire)); } // Spinlock
-        void unlock() { flag.clear(std::memory_order_release); }
+        void lock() noexcept { while (flag.test_and_set(std::memory_order_acquire)); } // Spinlock
+        void unlock() noexcept { flag.clear(std::memory_order_release); }
     };
 
     void refresh(typename cacheMap::iterator it) {
@@ -136,7 +136,7 @@ class MPSC_RingBufferUltraFast : private NonCopyableNonMoveable{    // Use EBO
     static_assert(isPowerOfTwo(Capacity), "Capacity must be power of 2");
 
 public:
-    bool isItTime() {
+    bool isItTime() const noexcept {
         return (tail - head > (Capacity / 2));
     }
 
@@ -339,6 +339,73 @@ private:
     std::unique_ptr<Entry[]> _table;
 };
 
+template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
+class LRUCacheAccumulativeFM : private NonCopyableNonMoveable{    // Use EBO
+
+    static_assert(Capacity > 0);
+
+    using cacheList = std::list<std::pair<KeyType, ValueType>>;
+    using cacheMap = FlatMapOALP<KeyType, typename cacheList::iterator, Capacity>;
+    using ringBuffer = MPSC_RingBufferUltraFast<KeyType, Capacity / 4>;
+
+private:
+    void apply_updates() {
+
+        KeyType key_to_refresh;
+        while (_update_buffer.pop(key_to_refresh)) { // It is safe because value is stored in _collection
+            auto it = _collection.find(key_to_refresh);
+            if (it) {
+                _freq_list.splice(_freq_list.begin(), _freq_list, *it);
+            }
+        }
+    }
+
+public:
+    LRUCacheAccumulativeFM() { }
+
+    std::optional<ValueType> get(const KeyType& key) noexcept {
+        std::shared_lock lock(_rw_mtx);
+
+        auto it = _collection.find(key);
+        if (!it) return {};
+
+        // Admission of losses
+        // Accumulate updates
+        _update_buffer.push(key);
+
+        return (*it)->second;
+    }
+
+    void put(const KeyType& key, ValueType value) {
+        std::unique_lock<std::shared_mutex> lock(_rw_mtx);
+
+        if (_update_buffer.isItTime()) {
+            apply_updates(); // Apply cummulative updates by writers
+        }
+
+        auto it = _collection.find(key);
+        if (it) {
+            (*it)->second = std::move(value);
+        } else {
+            if (_freq_list.size() == Capacity) {
+                apply_updates(); // Emergency apply
+
+                _collection.erase(_freq_list.back().first);
+                _freq_list.pop_back();
+            }
+            _freq_list.emplace_front(key, std::move(value));
+            _collection.insert(key, _freq_list.begin());
+        }
+    }
+
+private:
+    ringBuffer          _update_buffer;
+    cacheList           _freq_list;         // key, value
+    cacheMap            _collection;        // key, cacheList::iterator
+    std::shared_mutex   _rw_mtx;
+};
+
+
 //  Wrapper for SharedLRU
 template <template<typename, typename, std::size_t> class CacheImpl,
     typename KeyType, typename ValueType,
@@ -353,7 +420,7 @@ class ShardedLRUCache : private NonCopyableNonMoveable {
 
     using lruCache = CacheImpl<KeyType, ValueType, TotalCapacity / ShardsCount>;
 
-    std::size_t get_shard_idx(const KeyType& key) const {
+    std::size_t get_shard_idx(const KeyType& key) const noexcept {
         return std::hash<KeyType>{}(key) & Mask;
     }
 

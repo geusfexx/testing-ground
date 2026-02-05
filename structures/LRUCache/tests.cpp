@@ -6,7 +6,7 @@
 #include <random>
 #include "LRUCache.cpp"
 
-const int iterations = 1e5;
+const int iterations = 1e6;
 const int key_range = 1200;
     
 template<typename Cache, int Readers, int Writers>
@@ -91,6 +91,12 @@ int main() {
             ShardedLRUCache<LRUCacheAccumulative, int, int, cache_size, 16> cache;
             run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
         }
+
+        {
+            std::cout << "Testing ShardedLRUCacheAccumulativeFM..." << std::endl;
+            ShardedLRUCache<LRUCacheAccumulativeFM, int, int, cache_size, 16> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
         std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl << std::endl;
     }
 
@@ -135,6 +141,12 @@ int main() {
             ShardedLRUCache<LRUCacheAccumulative, int, int, cache_size, 16> cache;
             run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
         }
+
+        {
+            std::cout << "Testing ShardedLRUCacheAccumulativeFM..." << std::endl;
+            ShardedLRUCache<LRUCacheAccumulativeFM, int, int, cache_size, 16> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
         std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl << std::endl;
     }
 
@@ -177,6 +189,12 @@ int main() {
         {
             std::cout << "Testing ShardedLRUCacheAccumulative..." << std::endl;
             ShardedLRUCache<LRUCacheAccumulative, int, int, cache_size, 16> cache;
+            run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
+        }
+
+        {
+            std::cout << "Testing ShardedLRUCacheAccumulativeFM..." << std::endl;
+            ShardedLRUCache<LRUCacheAccumulativeFM, int, int, cache_size, 16> cache;
             run_test<decltype(cache), reader_count, writer_count>(cache, iterations);
         }
         std::cout << "Done: " << (reader_count + writer_count) << " threads finished." << std::endl << std::endl;
