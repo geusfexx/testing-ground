@@ -78,12 +78,12 @@ void execute_scenario(const TestConfig& config) {
 
 int main()
 {
-    const long long iters = 1e5;
+    const long long iters = 1e6;
     const int cache_sz = 1024;
     const int k_range = 1200;
 
     TestConfig read_heavy  = {24, 4, cache_sz, k_range, iters};
-    TestConfig write_heavy = {2, 12, cache_sz, k_range, iters};
+    TestConfig write_heavy = {4, 12, cache_sz, k_range, iters};
     TestConfig balanced    = {4, 2, cache_sz, k_range, iters};
 
 
@@ -91,19 +91,21 @@ int main()
     using Spin = SpinlockedLRU<int, int, cache_sz>;
     using Def  = DeferredLRU<int, int, cache_sz>;
     using DefFM = DeferredFlatLRU<int, int, cache_sz>;
+    using SPSCBDefFM = SPSCBuffer_DeferredFlatLRU<int, int, cache_sz>;
 
     using S_Slow = ShardedCache<StrictLRU, int, int, cache_sz, 16>;
     using S_Spin = ShardedCache<SpinlockedLRU, int, int, cache_sz, 16>;
     using S_Def  = ShardedCache<DeferredLRU, int, int, cache_sz, 16>;
     using S_DefFM = ShardedCache<DeferredFlatLRU, int, int, cache_sz, 16>;
+    using S_SPSCBDefFM = ShardedCache<SPSCBuffer_DeferredFlatLRU, int, int, cache_sz, 16>;
 
-    execute_scenario<false, Slow, Spin, Def, DefFM, S_Slow, S_Spin, S_Def, S_DefFM>(balanced);
-    execute_scenario<false, Slow, Spin, Def, DefFM, S_Slow, S_Spin, S_Def, S_DefFM>(write_heavy);
-    execute_scenario<false, Slow, Spin, Def, DefFM, S_Slow, S_Spin, S_Def, S_DefFM>(read_heavy);
-
-    execute_scenario<true, Slow, Spin, Def, DefFM, S_Slow, S_Spin, S_Def, S_DefFM>(balanced);
-    execute_scenario<true, Slow, Spin, Def, DefFM, S_Slow, S_Spin, S_Def, S_DefFM>(write_heavy);
-    execute_scenario<true, Slow, Spin, Def, DefFM, S_Slow, S_Spin, S_Def, S_DefFM>(read_heavy);
-
+//    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(balanced);
+//    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(write_heavy);
+    execute_scenario<false, /*Slow, Spin, */Def, DefFM, SPSCBDefFM, /*S_Slow, S_Spin, */S_Def, S_DefFM, S_SPSCBDefFM>(read_heavy);
+/*
+    execute_scenario<true, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(balanced);
+    execute_scenario<true, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(write_heavy);
+    execute_scenario<true, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(read_heavy);
+*/
     return 0;
 }

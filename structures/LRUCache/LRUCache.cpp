@@ -466,3 +466,135 @@ public:
 private:
     std::vector<std::unique_ptr<Cache>> _shards;
 };
+
+
+template <typename T, std::size_t Capacity>
+class SPSC_RingBufferUltraFast {
+
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
+
+    std::size_t increment(std::size_t i) const noexcept {
+        if constexpr (isPowerOfTwo(Capacity)) return (i + 1) & (Capacity - 1);
+        else return (i + 1) % Capacity;
+    }
+
+public:
+    bool isItTime() const noexcept {
+        return (tail - head > (Capacity / 2));
+    }
+
+    bool push(const T& value) {
+        const std::size_t curr_t = tail.load(std::memory_order_relaxed);
+
+        if (increment(curr_t) == head_cache) {
+            head_cache = head.load(std::memory_order_acquire); // MB on
+            if (increment(curr_t) == head_cache) return false;
+        }
+
+        buffer[curr_t] = value;
+        tail.store(increment(curr_t), std::memory_order_release); // MB off
+
+        return true;
+    }
+
+    bool pop(T& value) {
+        const std::size_t curr_h = head.load(std::memory_order_relaxed);
+
+        if (curr_h == tail_cache) {
+            tail_cache = tail.load(std::memory_order_acquire); // MB on
+            if (curr_h == tail_cache) return false;
+        }
+
+        value = buffer[curr_h];
+        head.store(increment(curr_h), std::memory_order_release); // MB off
+
+        return true;
+    }
+
+private:
+    T buffer[Capacity];
+
+    // Producer's group
+    alignas(CacheLine) std::atomic<std::size_t> tail{0};
+    std::size_t head_cache{0}; // local
+
+    // Consumer's group
+    alignas(CacheLine) std::atomic<std::size_t> head{0};
+    std::size_t tail_cache{0}; // local
+};
+
+template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std::size_t MaxThreads = 16>
+class SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
+public:
+    static constexpr const char* name() noexcept { return "SPSCBuffer_DeferredFlatLRU"; }
+
+private:
+    using cacheList = std::list<std::pair<KeyType, ValueType>>;
+    using cacheMap = LinearFlatMap<KeyType, typename cacheList::iterator, Capacity>;
+    using SPSCBuffer = SPSC_RingBufferUltraFast<KeyType, Capacity / (4 * MaxThreads)>;
+
+    static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
+
+    static std::size_t get_thread_id() {
+        static std::atomic<std::size_t> counter{0};
+
+        // rollcall
+        thread_local std::size_t id = counter.fetch_add(1, std::memory_order_relaxed) & (MaxThreads - 1);
+        return id;
+    }
+
+    void apply_updates() {
+        for (std::size_t i = 0; i < MaxThreads; ++i) {
+            KeyType key_to_refresh;
+
+            while (_update_buffers[i].pop(key_to_refresh)) {
+                auto it = _collection.find(key_to_refresh);
+                if (it) {
+                    _freq_list.splice(_freq_list.begin(), _freq_list, *it);
+                }
+            }
+        }
+    }
+
+public:
+    std::optional<ValueType> get(const KeyType& key) noexcept {
+        std::shared_lock lock(_rw_mtx);
+
+        auto it = _collection.find(key);
+        if (!it) return {};
+
+        _update_buffers[get_thread_id()].push(key);
+
+        return (*it)->second;
+    }
+
+    void put(const KeyType& key, ValueType value) {
+        std::unique_lock<std::shared_mutex> lock(_rw_mtx);
+
+        if (_update_buffers[get_thread_id()].isItTime()) {
+            apply_updates(); // Apply cummulative updates by writers
+        }
+
+        auto it = _collection.find(key);
+        if (it) {
+            (*it)->second = std::move(value);
+        } else {
+            if (_freq_list.size() == Capacity) {
+                apply_updates(); // Emergency apply
+
+                _collection.erase(_freq_list.back().first);
+                _freq_list.pop_back();
+            }
+            _freq_list.emplace_front(key, std::move(value));
+            _collection.insert(key, _freq_list.begin());
+        }
+    }
+
+private:
+    alignas(64) SPSCBuffer _update_buffers[MaxThreads];
+
+    cacheList           _freq_list;
+    cacheMap            _collection;
+    std::shared_mutex   _rw_mtx;
+};
