@@ -28,7 +28,7 @@ private:
 
     using cacheList = std::list<std::pair<KeyType, ValueType>>;
     using cacheMap = std::unordered_map<KeyType, typename cacheList::iterator>;
-    
+
     void refresh(typename cacheMap::iterator it) {
         _freq_list.splice(_freq_list.begin(), _freq_list, it->second);
     }
@@ -201,8 +201,8 @@ private:
 //          I guess, Adaptive Locking / Dynamic Policy Switching may be useful,
 //          but it isn't needed without factual demands
 //
-// TODO     sharding    ******      Done
-// TODO     using flat map
+// TODO     sharding            ******      Done
+// TODO     using flat map      ******      Done
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
 class DeferredLRU : private NonCopyableNonMoveable{    // Use EBO
 public:

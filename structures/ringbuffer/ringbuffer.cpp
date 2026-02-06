@@ -1,6 +1,19 @@
 #include <atomic>
 #include <vector>
 
+class NonCopyableNonMoveable {
+public:
+    NonCopyableNonMoveable() = default;
+
+    NonCopyableNonMoveable(const NonCopyableNonMoveable&) = delete;
+    NonCopyableNonMoveable& operator=(const NonCopyableNonMoveable&) = delete;
+
+    NonCopyableNonMoveable(NonCopyableNonMoveable&&) = delete;
+    NonCopyableNonMoveable& operator=(NonCopyableNonMoveable&&) = delete;
+protected:
+    ~NonCopyableNonMoveable() = default;
+};
+
 /* It has:  False Sharing problem
 *           fixed size vector
 *           acq-rel fence
@@ -203,3 +216,69 @@ private:
     std::size_t tail_cache{0};
 };
 
+/* It has:  False Sharing resolved with alignas
+*           array
+*           acq-rel fence
+*           division using bitwise "AND"
+*/
+template <typename T, std::size_t Capacity>
+class MPSC_TraceBuffer : private NonCopyableNonMoveable{    // Use EBO
+public:
+    static constexpr const char* name() noexcept { return "MPSC_TraceBuffer"; }
+
+private:
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
+    static constexpr std::size_t Mask = Capacity - 1;
+    static_assert(isPowerOfTwo(Capacity), "Capacity must be power of 2");
+
+public:
+    bool isItTime() const noexcept {
+        return (tail - head > (Capacity / 2));
+    }
+
+    bool push(const T& value) {
+        std::size_t curr_t = tail.load(std::memory_order_relaxed);
+        while (true) { // CAS
+            if (((curr_t + 1) & Mask) == head_cache) {
+                head_cache = head.load(std::memory_order_acquire);
+                if (((curr_t + 1) & Mask) == head_cache) {
+                    return false;
+                }
+            }
+
+            // Write
+            if (tail.compare_exchange_weak(curr_t, (curr_t + 1) & Mask,
+                                         std::memory_order_release,         // MB off
+                                         std::memory_order_relaxed)) {
+                buffer[curr_t] = value;
+                return true;
+            }
+        }
+    }
+
+    bool pop(T& value) {
+        const std::size_t curr_h = head.load(std::memory_order_relaxed);
+
+        if (curr_h == tail_cache) {
+            tail_cache = tail.load(std::memory_order_acquire); // MB on
+            if (curr_h == tail_cache) return false;
+        }
+
+        value = buffer[curr_h];
+        head.store((curr_h + 1) & Mask, std::memory_order_release); // MB off
+
+        return true;
+    }
+
+private:
+    T buffer[Capacity];
+
+    // Producer's group
+    alignas(CacheLine) std::atomic<std::size_t> tail{0};
+    std::size_t head_cache{0}; // local
+
+    // Consumer's group
+    alignas(CacheLine) std::atomic<std::size_t> head{0};
+    std::size_t tail_cache{0}; // local
+};

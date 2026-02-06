@@ -51,5 +51,10 @@ int main()
     SPSC_RingBufferExperimental<long long, capacity> experimental;
     run_test(experimental, iterations);
 
+    // Unfair, but it is degenerate case. Overheads only, without profit
+    std::cout << "\nTesting MPSC_TraceBuffer RingBuffer..." << std::endl;
+    MPSC_TraceBuffer<long long, capacity> tracebuffer;
+    run_test(tracebuffer, iterations);
+
     return 0;
 }
