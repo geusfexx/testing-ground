@@ -534,8 +534,10 @@ private:
     using cacheMap = LinearFlatMap<KeyType, typename cacheList::iterator, Capacity>;
     using SPSCBuffer = SPSC_RingBufferUltraFast<KeyType, Capacity / (4 * MaxThreads)>;
 
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
     static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
 
+private:
     static std::size_t get_thread_id() {
         static std::atomic<std::size_t> counter{0};
 
@@ -545,15 +547,22 @@ private:
     }
 
     void apply_updates() {
-        for (std::size_t i = 0; i < MaxThreads; ++i) {
-            KeyType key_to_refresh;
+        uint64_t mask = _dirty_mask.exchange(0, std::memory_order_acquire);
+        if (mask == 0) return;
 
-            while (_update_buffers[i].pop(key_to_refresh)) {
+        // Iterate only for set bits
+        while (mask > 0) {
+            int idx = std::countr_zero(mask); // Index by set bit
+
+            KeyType key_to_refresh;
+            while (_update_buffers[idx].pop(key_to_refresh)) {
                 auto it = _collection.find(key_to_refresh);
                 if (it) {
                     _freq_list.splice(_freq_list.begin(), _freq_list, *it);
                 }
             }
+
+            mask &= (mask - 1); // Next bit
         }
     }
 
@@ -564,7 +573,10 @@ public:
         auto it = _collection.find(key);
         if (!it) return {};
 
-        _update_buffers[get_thread_id()].push(key);
+        auto tid = get_thread_id();
+        if (_update_buffers[tid].push(key)) {
+            _dirty_mask.fetch_or(1ULL << tid, std::memory_order_relaxed); // Set bit in mask
+        }
 
         return (*it)->second;
     }
@@ -592,7 +604,8 @@ public:
     }
 
 private:
-    alignas(64) SPSCBuffer _update_buffers[MaxThreads];
+    alignas(CacheLine) SPSCBuffer _update_buffers[MaxThreads];
+    alignas(CacheLine) std::atomic<uint64_t> _dirty_mask{0};
 
     cacheList           _freq_list;
     cacheMap            _collection;
