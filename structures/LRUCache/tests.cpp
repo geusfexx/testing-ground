@@ -78,7 +78,7 @@ void execute_scenario(const TestConfig& config) {
 
 int main()
 {
-    const long long iters = 1e6;
+    const long long iters = 1e7;
     const int cache_sz = 1024;
     const int k_range = 1200;
 
@@ -92,16 +92,18 @@ int main()
     using Def  = DeferredLRU<int, int, cache_sz>;
     using DefFM = DeferredFlatLRU<int, int, cache_sz>;
     using SPSCBDefFM = SPSCBuffer_DeferredFlatLRU<int, int, cache_sz>;
+    using Lv2_SPSCBDefFM = Lv2_SPSCBuffer_DeferredFlatLRU<int, int, cache_sz>;
 
     using S_Slow = ShardedCache<StrictLRU, int, int, cache_sz, 16>;
     using S_Spin = ShardedCache<SpinlockedLRU, int, int, cache_sz, 16>;
     using S_Def  = ShardedCache<DeferredLRU, int, int, cache_sz, 16>;
     using S_DefFM = ShardedCache<DeferredFlatLRU, int, int, cache_sz, 16>;
     using S_SPSCBDefFM = ShardedCache<SPSCBuffer_DeferredFlatLRU, int, int, cache_sz, 16>;
+    using S_Lv2_SPSCBDefFM = ShardedCache<Lv2_SPSCBuffer_DeferredFlatLRU, int, int, cache_sz, 16>;
 
 //    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(balanced);
 //    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(write_heavy);
-    execute_scenario<false, /*Slow, Spin, */Def, DefFM, SPSCBDefFM, /*S_Slow, S_Spin, */S_Def, S_DefFM, S_SPSCBDefFM>(read_heavy);
+    execute_scenario<false, /*Slow, Spin, Def, DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, S_Slow, S_Spin, */S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM>(read_heavy);
 /*
     execute_scenario<true, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(balanced);
     execute_scenario<true, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(write_heavy);

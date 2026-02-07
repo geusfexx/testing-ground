@@ -513,7 +513,7 @@ public:
     }
 
 private:
-    T buffer[Capacity];
+    alignas(CacheLine) T buffer[Capacity];
 
     // Producer's group
     alignas(CacheLine) std::atomic<std::size_t> tail{0};
@@ -605,6 +605,110 @@ public:
 
 private:
     alignas(CacheLine) SPSCBuffer _update_buffers[MaxThreads];
+    alignas(CacheLine) std::atomic<uint64_t> _dirty_mask{0};
+
+    cacheList           _freq_list;
+    cacheMap            _collection;
+    std::shared_mutex   _rw_mtx;
+};
+
+template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std::size_t MaxThreads = 16>
+class Lv2_SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
+public:
+    static constexpr const char* name() noexcept { return "Lvl2_SPSCBuffer_DeferredFlatLRU"; }
+
+private:
+    using cacheList = std::list<std::pair<KeyType, ValueType>>;
+    using cacheMap = LinearFlatMap<KeyType, typename cacheList::iterator, Capacity>;
+    using SPSCBuffer = SPSC_RingBufferUltraFast<KeyType, Capacity / (4 * MaxThreads)>;
+
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
+
+private:
+    struct alignas(64) PaddedSPSC : public SPSCBuffer {
+        char padding[64 - (sizeof(SPSCBuffer) % 64)];
+    };
+
+private:
+    static std::size_t get_thread_id() {
+        static std::atomic<std::size_t> counter{0};
+
+        // rollcall
+        thread_local std::size_t id = std::numeric_limits<std::size_t>::max();
+
+        if (id == std::numeric_limits<std::size_t>::max()) [[unlikely]] {
+            id = counter.fetch_add(1, std::memory_order_relaxed) & (MaxThreads - 1);
+        }
+
+        return id;
+    }
+
+    void apply_updates() {
+        uint64_t mask = _dirty_mask.exchange(0, std::memory_order_acquire);
+        if (mask == 0) return;
+
+        // Iterate only for set bits
+        while (mask > 0) {
+            int idx = std::countr_zero(mask); // Index by set bit
+
+            KeyType key_to_refresh;
+            while (_update_buffers[idx].pop(key_to_refresh)) {
+                auto it = _collection.find(key_to_refresh);
+                if (it) {
+                    __builtin_prefetch(&(*it), 1, 3); // Doubtful, but okey :) It designed for heavy payload
+
+                    _freq_list.splice(_freq_list.begin(), _freq_list, *it);
+                }
+            }
+
+            mask &= (mask - 1); // Next bit
+        }
+    }
+
+public:
+    std::optional<ValueType> get(const KeyType& key) noexcept {
+        std::shared_lock lock(_rw_mtx);
+
+        auto it = _collection.find(key);
+        if (!it) [[unlikely]] return {};
+
+        __builtin_prefetch(&(*it)->second, 0, 1); // Doubtful, but okey :) It designed for heavy payload
+
+        auto tid = get_thread_id();
+        if (_update_buffers[tid].push(key)) {
+            if (!(_dirty_mask.load(std::memory_order_relaxed) & (1ULL << tid))) {   // Test
+                _dirty_mask.fetch_or(1ULL << tid, std::memory_order_relaxed);       // Test & Set bit in mask
+            }
+        }
+
+        return (*it)->second;
+    }
+
+    void put(const KeyType& key, ValueType value) {
+        std::unique_lock<std::shared_mutex> lock(_rw_mtx);
+
+        if (_dirty_mask.load(std::memory_order_relaxed)) {
+            apply_updates(); // Apply cummulative updates by writers
+        }
+
+        auto it = _collection.find(key);
+        if (it) {
+            (*it)->second = std::move(value);
+        } else {
+            if (_freq_list.size() == Capacity) {
+                apply_updates(); // Emergency apply
+
+                _collection.erase(_freq_list.back().first);
+                _freq_list.pop_back();
+            }
+            _freq_list.emplace_front(key, std::move(value));
+            _collection.insert(key, _freq_list.begin());
+        }
+    }
+
+private:
+    alignas(CacheLine) PaddedSPSC _update_buffers[MaxThreads];
     alignas(CacheLine) std::atomic<uint64_t> _dirty_mask{0};
 
     cacheList           _freq_list;
