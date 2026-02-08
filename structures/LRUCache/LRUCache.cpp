@@ -4,6 +4,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <memory>
+#include <cstddef>
 
 class NonCopyableNonMoveable {
 public:
@@ -22,6 +23,8 @@ template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
 class StrictLRU : private NonCopyableNonMoveable{    // Use EBO
 public:
     static constexpr const char* name() noexcept { return "StrictLRU"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
 
 private:
     static_assert(Capacity > 0);
@@ -70,6 +73,8 @@ template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
 class SpinlockedLRU : private NonCopyableNonMoveable{    // Use EBO
 public:
     static constexpr const char* name() noexcept { return "SpinlockedLRU"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
 
 private:
     static_assert(Capacity > 0);
@@ -133,10 +138,11 @@ private:
 *           acq-rel fence
 *           division using bitwise "AND"
 */
-template <typename T, std::size_t Capacity>
+template <typename ValueType, std::size_t Capacity>
 class MPSC_TraceBuffer : private NonCopyableNonMoveable{    // Use EBO
 public:
     static constexpr const char* name() noexcept { return "MPSC_TraceBuffer"; }
+    using value_type = ValueType;
 
 private:
     static constexpr std::size_t CacheLine = 64; // Some hardcode :)
@@ -149,7 +155,7 @@ public:
         return (tail - head > (Capacity / 2));
     }
 
-    bool push(const T& value) {
+    bool push(const ValueType& value) {
         std::size_t curr_t = tail.load(std::memory_order_relaxed);
         while (true) { // CAS
             if (((curr_t + 1) & Mask) == head_cache) {
@@ -169,7 +175,7 @@ public:
         }
     }
 
-    bool pop(T& value) {
+    bool pop(ValueType& value) {
         const std::size_t curr_h = head.load(std::memory_order_relaxed);
 
         if (curr_h == tail_cache) {
@@ -184,7 +190,7 @@ public:
     }
 
 private:
-    T buffer[Capacity];
+    alignas(CacheLine) ValueType buffer[Capacity];
 
     // Producer's group
     alignas(CacheLine) std::atomic<std::size_t> tail{0};
@@ -207,6 +213,8 @@ template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
 class DeferredLRU : private NonCopyableNonMoveable{    // Use EBO
 public:
     static constexpr const char* name() noexcept { return "DeferredLRU"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
 
 private:
     static_assert(Capacity > 0);
@@ -283,6 +291,8 @@ class LinearFlatMap : private NonCopyableNonMoveable { // Open Addressing table 
 
 public:
     static constexpr const char* name() noexcept { return "LinearFlatMap"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
 
 private:
     static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
@@ -359,6 +369,9 @@ template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
 class DeferredFlatLRU : private NonCopyableNonMoveable{    // Use EBO
 public:
     static constexpr const char* name() noexcept { return "DeferredFlatLRU"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
+
 private:
     static_assert(Capacity > 0);
 
@@ -427,13 +440,20 @@ private:
 //  Wrapper for SharedLRU
 template <template<typename, typename, std::size_t> class CacheImpl,
     typename KeyType, typename ValueType,
-    std::size_t TotalCapacity = 1024,
+    std::size_t TotalCapacity = 2 * 1024,
     std::size_t ShardsCount = 16>
 class ShardedCache : private NonCopyableNonMoveable {
+    static constexpr std::size_t ShardCapacity = TotalCapacity / ShardsCount;
+    static_assert(ShardCapacity >= 64, "Shard capacity too small!");
+    using Cache = CacheImpl<KeyType, ValueType, ShardCapacity>;
+
 public:
     static constexpr std::string name() noexcept {
         return "Sharded<" + std::string(Cache::name()) + ">";
     }
+
+    using value_type = ValueType;
+    using key_type = KeyType;
 
 private:
     static constexpr std::size_t Mask = ShardsCount - 1;
@@ -441,17 +461,17 @@ private:
     static_assert(TotalCapacity > 0, "TotalCapacity must be > 0");
     static_assert(ShardsCount > 0, "ShardsCount must be > 0");
     static_assert(isPowerOfTwo(ShardsCount), "ShardsCount must be power of 2");
-
-    using Cache = CacheImpl<KeyType, ValueType, TotalCapacity / ShardsCount>;
+//    static_assert(alignof(Cache) <= alignof(std::max_align_t));
 
     std::size_t get_shard_idx(const KeyType& key) const noexcept {
         return std::hash<KeyType>{}(key) & Mask;
     }
 
 public:
-    ShardedCache() : _shards(ShardsCount) {
-        for (auto& shard : _shards) {
-            shard = std::make_unique<Cache>();
+    ShardedCache() {
+        _shards.reserve(ShardsCount);
+        for (std::size_t i = 0; i < ShardsCount; ++i) {
+            _shards.emplace_back(std::make_unique<Cache>());
         }
     }
 
@@ -468,23 +488,25 @@ private:
 };
 
 
-template <typename T, std::size_t Capacity>
+template <typename ValueType, std::size_t Capacity>
 class SPSC_RingBufferUltraFast {
 
     static constexpr std::size_t CacheLine = 64; // Some hardcode :)
     static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
-
+    static_assert(isPowerOfTwo(Capacity), "ShardsCount must be power of 2");
     std::size_t increment(std::size_t i) const noexcept {
-        if constexpr (isPowerOfTwo(Capacity)) return (i + 1) & (Capacity - 1);
-        else return (i + 1) % Capacity;
+        return (i + 1) & (Capacity - 1);
     }
+
+public:
+    using value_type = ValueType;
 
 public:
     bool isItTime() const noexcept {
         return (tail - head > (Capacity / 2));
     }
 
-    bool push(const T& value) {
+    bool push(const ValueType& value) {
         const std::size_t curr_t = tail.load(std::memory_order_relaxed);
 
         if (increment(curr_t) == head_cache) {
@@ -498,7 +520,7 @@ public:
         return true;
     }
 
-    bool pop(T& value) {
+    bool pop(ValueType& value) {
         const std::size_t curr_h = head.load(std::memory_order_relaxed);
 
         if (curr_h == tail_cache) {
@@ -513,7 +535,7 @@ public:
     }
 
 private:
-    alignas(CacheLine) T buffer[Capacity];
+    alignas(CacheLine) ValueType buffer[Capacity];
 
     // Producer's group
     alignas(CacheLine) std::atomic<std::size_t> tail{0};
@@ -528,6 +550,8 @@ template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std
 class SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
 public:
     static constexpr const char* name() noexcept { return "SPSCBuffer_DeferredFlatLRU"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
 
 private:
     using cacheList = std::list<std::pair<KeyType, ValueType>>;
@@ -616,6 +640,8 @@ template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std
 class Lv2_SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
 public:
     static constexpr const char* name() noexcept { return "Lvl2_SPSCBuffer_DeferredFlatLRU"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
 
 private:
     using cacheList = std::list<std::pair<KeyType, ValueType>>;
