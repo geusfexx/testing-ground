@@ -47,18 +47,19 @@ public:
         return it->second->second;
     }
 
-    void put(const KeyType& key, ValueType value) {
+    template <typename T>
+    void put(const KeyType& key, T&& value) {
         std::lock_guard<std::mutex> lock(_mtx);
         auto it = _collection.find(key);
         if (it != _collection.end()) {
-            it->second->second = std::move(value);
+            it->second->second = std::forward<T>(value);
             refresh(it);
         } else {
             if (_freq_list.size() == Capacity) {
                 _collection.erase(_freq_list.back().first);
                 _freq_list.pop_back();
             }
-            _freq_list.emplace_front(key, std::move(value));
+            _freq_list.emplace_front(key, std::forward<T>(value));
             _collection[key] = _freq_list.begin();
         }
     }
@@ -109,18 +110,19 @@ public:
         return val;
     }
 
-    void put(const KeyType& key, ValueType value) {
+    template <typename T>
+    void put(const KeyType& key, T&& value) {
         _lock.lock();
         auto it = _collection.find(key);
         if (it != _collection.end()) {
-            it->second->second = std::move(value);
+            it->second->second = std::forward<T>(value);
             refresh(it);
         } else {
             if (_freq_list.size() == Capacity) {
                 _collection.erase(_freq_list.back().first);
                 _freq_list.pop_back();
             }
-            _freq_list.emplace_front(key, std::move(value));
+            _freq_list.emplace_front(key, std::forward<T>(value));
             _collection[key] = _freq_list.begin();
         }
         _lock.unlock();
@@ -251,7 +253,8 @@ public:
         return it->second->second;
     }
 
-    void put(const KeyType& key, ValueType value) {
+    template <typename T>
+    void put(const KeyType& key, T&& value) {
         std::unique_lock<std::shared_mutex> lock(_rw_mtx);
 
         if (_update_buffer.isItTime()) {
@@ -260,7 +263,7 @@ public:
 
         auto it = _collection.find(key);
         if (it != _collection.end()) {
-            it->second->second = std::move(value);
+            it->second->second = std::forward<T>(value);
         } else {
             if (_freq_list.size() == Capacity) {
                 apply_updates(); // Emergency apply
@@ -268,7 +271,7 @@ public:
                 _collection.erase(_freq_list.back().first);
                 _freq_list.pop_back();
             }
-            _freq_list.emplace_front(key, std::move(value));
+            _freq_list.emplace_front(key, std::forward<T>(value));
             _collection[key] = _freq_list.begin();
         }
     }
@@ -407,7 +410,8 @@ public:
         return (*it)->second;
     }
 
-    void put(const KeyType& key, ValueType value) {
+    template <typename T>
+    void put(const KeyType& key, T&& value) {
         std::unique_lock<std::shared_mutex> lock(_rw_mtx);
 
         if (_update_buffer.isItTime()) {
@@ -416,7 +420,7 @@ public:
 
         auto it = _collection.find(key);
         if (it) {
-            (*it)->second = std::move(value);
+            (*it)->second = std::forward<T>(value);
         } else {
             if (_freq_list.size() == Capacity) {
                 apply_updates(); // Emergency apply
@@ -424,7 +428,7 @@ public:
                 _collection.erase(_freq_list.back().first);
                 _freq_list.pop_back();
             }
-            _freq_list.emplace_front(key, std::move(value));
+            _freq_list.emplace_front(key, std::forward<T>(value));
             _collection.insert(key, _freq_list.begin());
         }
     }
@@ -461,7 +465,7 @@ private:
     static_assert(TotalCapacity > 0, "TotalCapacity must be > 0");
     static_assert(ShardsCount > 0, "ShardsCount must be > 0");
     static_assert(isPowerOfTwo(ShardsCount), "ShardsCount must be power of 2");
-//    static_assert(alignof(Cache) <= alignof(std::max_align_t));
+    static_assert((alignof(Cache) & (alignof(Cache) - 1)) == 0, "Alignment must be power of 2");
 
     std::size_t get_shard_idx(const KeyType& key) const noexcept {
         return std::hash<KeyType>{}(key) & Mask;
@@ -479,8 +483,9 @@ public:
         return _shards[get_shard_idx(key)]->get(key);
     }
 
-    void put(const KeyType& key, ValueType value) {
-        _shards[get_shard_idx(key)]->put(key, std::move(value));
+    template <typename T>
+    void put(const KeyType& key, T&& value) {
+        _shards[get_shard_idx(key)]->put(key, std::forward<T>(value));
     }
 
 private:
@@ -605,7 +610,8 @@ public:
         return (*it)->second;
     }
 
-    void put(const KeyType& key, ValueType value) {
+    template <typename T>
+    void put(const KeyType& key, T&& value) {
         std::unique_lock<std::shared_mutex> lock(_rw_mtx);
 
         if (_update_buffers[get_thread_id()].isItTime()) {
@@ -614,7 +620,7 @@ public:
 
         auto it = _collection.find(key);
         if (it) {
-            (*it)->second = std::move(value);
+            (*it)->second = std::forward<T>(value);
         } else {
             if (_freq_list.size() == Capacity) {
                 apply_updates(); // Emergency apply
@@ -622,7 +628,7 @@ public:
                 _collection.erase(_freq_list.back().first);
                 _freq_list.pop_back();
             }
-            _freq_list.emplace_front(key, std::move(value));
+            _freq_list.emplace_front(key, std::forward<T>(value));
             _collection.insert(key, _freq_list.begin());
         }
     }
@@ -711,7 +717,8 @@ public:
         return (*it)->second;
     }
 
-    void put(const KeyType& key, ValueType value) {
+    template <typename T>
+    void put(const KeyType& key, T&& value) {
         std::unique_lock<std::shared_mutex> lock(_rw_mtx);
 
         if (_dirty_mask.load(std::memory_order_relaxed)) {
@@ -720,7 +727,7 @@ public:
 
         auto it = _collection.find(key);
         if (it) {
-            (*it)->second = std::move(value);
+            (*it)->second = std::forward<T>(value);
         } else {
             if (_freq_list.size() == Capacity) {
                 apply_updates(); // Emergency apply
@@ -728,7 +735,7 @@ public:
                 _collection.erase(_freq_list.back().first);
                 _freq_list.pop_back();
             }
-            _freq_list.emplace_front(key, std::move(value));
+            _freq_list.emplace_front(key, std::forward<T>(value));
             _collection.insert(key, _freq_list.begin());
         }
     }

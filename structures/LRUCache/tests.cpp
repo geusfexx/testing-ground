@@ -16,6 +16,8 @@ struct TestConfig {
     long long iterations;
 };
 
+constexpr int key_amount = 100'000;
+
 template<std::size_t Size>
 struct alignas(64) Payload {
     static_assert(Size >= sizeof(uint64_t), "Size must be at least 8 bytes");
@@ -43,18 +45,36 @@ namespace std {
     };
 }
 
+template<std::size_t KeyAmount = 100'000>
+class BenchmarkData {
+public:
+    std::vector<int> keys;
+
+    static const BenchmarkData& get(int key_range) {
+        static BenchmarkData instance(key_range);
+        return instance;
+    }
+
+private:
+    BenchmarkData(int key_range) {
+        keys.resize(KeyAmount);
+        // Equality & Deterministic data
+        std::mt19937 gen(42);
+        std::uniform_int_distribution<> dist(0, key_range);
+
+        for (auto& k : keys) {
+            k = dist(gen);
+        }
+    }
+};
 
 template<typename Cache, bool UseYield = false>
 void run_benchmark(const TestConfig& config) {
     Cache cache;
     std::atomic<long long> total_misses{0};
     std::vector<std::thread> threads;
-    std::vector<int> keys(100'000);
-
-    std::mt19937 gen(std::random_device{}());
-    std::uniform_int_distribution<> dist(0, config.key_range);
-
-    for(auto& k : keys) k = dist(gen);
+    const auto& data = BenchmarkData<key_amount>::get(config.key_range);
+    const auto& keys = data.keys;
 
     std::cout << "Testing: " << Cache::name() << (UseYield ? " (with yield)" : "") << "..." << std::endl;
 
@@ -62,11 +82,11 @@ void run_benchmark(const TestConfig& config) {
 
     for (int i = 0; i < config.readers; ++i) {
         threads.emplace_back([&cache, &config, &total_misses, &keys, i]() {
-
             int local_misses = 0;
+            std::size_t offset = (i * 100) & (config.key_amount - 1); // Distribute readers across different areas
 
             for (long long j = 0; j < config.iterations; ++j) {
-                if (!cache.get(keys[j & (config.key_amount - 1)])) local_misses++;
+                if (!cache.get(keys[(offset + j) & (config.key_amount - 1)])) local_misses++;
                 if constexpr (UseYield) std::this_thread::yield();
             }
             total_misses.fetch_add(local_misses, std::memory_order_relaxed);
@@ -74,10 +94,11 @@ void run_benchmark(const TestConfig& config) {
     }
 
     for (int i = 0; i < config.writers; ++i) {
-        threads.emplace_back([&cache, &config, &keys]() {
+        threads.emplace_back([&cache, &config, &keys, i]() {
             typename Cache::value_type val{42};
             for (long long j = 0; j < config.iterations; ++j) {
-                cache.put((keys[j & (config.key_amount - 1)]), val);
+                std::size_t offset = ((config.readers + i) * 100) & (config.key_amount - 1); // Distribute writers across different areas
+                cache.put((keys[(offset + j) & (config.key_amount - 1)]), val);
                 if constexpr (UseYield) std::this_thread::yield();
             }
         });
@@ -88,8 +109,6 @@ void run_benchmark(const TestConfig& config) {
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> diff = end - start;
 
-    //long long total_misses = 0;
-    //for (int m : thread_misses) total_misses += m;
     double total_ops = (config.readers + config.writers) * config.iterations;
 
     std::cout << "Time: " << diff.count() << " s \n"
@@ -113,9 +132,8 @@ void execute_scenario(const TestConfig& config) {
 int main()
 {
     const long long iters = 1e6;
-    const int cache_sz = 4 * 1024;
+    const int cache_sz = 2 * 1024;
     const int k_range = (cache_sz * 12) / 10;
-    const int key_amount = 100'000;
 
     TestConfig read_heavy  = {28, 4, cache_sz, k_range, key_amount, iters};
     TestConfig write_heavy = {4, 12, cache_sz, k_range, key_amount, iters};
