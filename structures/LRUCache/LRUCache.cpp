@@ -753,9 +753,9 @@ private:
 
 /*
 *   TODO:   Summary       combine list logic into FlatMap as one _collection
-*   TODO:                       _collection.move_to_front(...) in LRU
-*   TODO:                       enum class SlotState : uint8_t { Empty = 0, Occupied = 1, Deleted = 2 };
-*   TODO:                       _collection.get_tail()
+*   TODO:                       _collection.move_to_front(...) in LRU                                       ******      Done
+*   TODO:                       enum class SlotState : uint8_t { Empty = 0, Occupied = 1, Deleted = 2 };    ******      Done
+*   TODO:                       _collection.get_tail()              ******      Done
 *   TODO:                       _collection.find_index(key)         ******      Done
 *   TODO:                       _collection.assign_slot(key);       ******      Done
 *   TODO:                       get_hash_idx & next_slot            ******      Done
@@ -790,6 +790,9 @@ private:
     static constexpr std::size_t Mask = TableSize - 1;
 
 private:
+
+    struct LookupResult { ValueType* ptr; index_type idx; bool found; };
+
     std::size_t calculate_hash_idx(const KeyType& key) const noexcept {
         return std::hash<KeyType>{}(key) & Mask;
     }
@@ -801,22 +804,14 @@ private:
     void detach(const index_type& idx) {
         Entry& current = _table[idx];
         
-        if (current.next != NullIdx) _table[current.next] = current.prev;
+        if (current.next != NullIdx) _table[current.next].prev = current.prev;
         else _tail = current.prev;
         
-        if (current.prev != NullIdx) _table[current.prev] = current.next;
+        if (current.prev != NullIdx) _table[current.prev].next = current.next;
         else _head = current.next;
         
         current.next = NullIdx;
         current.prev = NullIdx;
-    }
-
-    void move_to_front(index_type idx) {
-        if (idx == _head || idx == NullIdx) return;
-
-        detach(idx);
-
-        push_front(idx);
     }
 
     void push_front(index_type idx) {
@@ -833,6 +828,51 @@ private:
 public:
     LinkedFlatMap() : _table(std::make_unique<Entry[]>(TableSize)) {}
 
+    bool is_occupied(index_type idx) const noexcept {
+        return _table[idx].state == slot_state::Occupied;
+    }
+
+    std::size_t size() { return _size; }
+
+    index_type get_tail() { return _tail; }
+
+    LookupResult lookup(const KeyType& key) const {
+        std::size_t idx = calculate_hash_idx(key);
+        index_type first_del = NullIdx;
+
+        for (std::size_t i = 0; i < TableSize; ++i) {
+            auto& current = _table[idx];
+
+            if (current.state == slot_state::Empty) {
+                index_type target = (first_del != NullIdx) ? first_del : static_cast<index_type>(idx);
+                return {nullptr, target, false};
+            }
+
+            if (current.state == slot_state::Deleted && first_del == NullIdx) {
+                first_del = static_cast<index_type>(idx);
+            }
+
+            if (current.state == slot_state::Occupied && current.key == key) {
+                return {&current.value, static_cast<index_type>(idx), true};
+            }
+
+            idx = next_slot(idx);
+        }
+        __builtin_unreachable(); // I' not sure, I hope :)
+    }
+
+    template <typename... Args>
+    void emplace_at(index_type idx, const KeyType& key, Args&&... args) {
+        auto& current = _table[idx];
+
+        current.key = key;
+
+        new (&current.value) value_type(std::forward<Args>(args)...); // Memory had been allocated by assign_slot
+
+        current.state = slot_state::Occupied;
+        _size++;
+    }
+
     std::pair<value_type*, index_type> find_index(const key_type& key) const {
         std::size_t hash = calculate_hash_idx(key);
 
@@ -848,28 +888,32 @@ public:
         return {nullptr, NullIdx};
     }
 
-    void assign_slot(const key_type& key) {
-        std::size_t hash = calculate_hash_idx(key);
+    index_type assign_slot(const key_type& key) {
+        std::size_t idx = calculate_hash_idx(key);
         index_type first_del_idx_wth_same_key = NullIdx;
 
-        for (std::size_t i = 0; i < TableSize; ++i) {
-            std::size_t idx = (hash + i) & Mask;
-
+        while (true) {
             if (_table[idx].state == slot_state::Empty) {
-                std::size_t target = (first_del_idx_wth_same_key != NullIdx) ? first_del_idx_wth_same_key
+                return (first_del_idx_wth_same_key != NullIdx) ? first_del_idx_wth_same_key
                                                                              : static_cast<index_type>(idx);
-
-                _table[target].key = key;
-                _table[idx].state == slot_state::Occupied;
-                return;
             }
 
             if (_table[idx].state == slot_state::Deleted && first_del_idx_wth_same_key == NullIdx) {
                 first_del_idx_wth_same_key = static_cast<index_type>(idx);
             }
+
+            idx = next_slot(idx);
         }
 
-        return; // unreachable
+        return NullIdx; // unreachable
+    }
+
+    void move_to_front(index_type idx) {
+        if (idx == _head || idx == NullIdx) return;
+
+        detach(idx);
+
+        push_front(idx);
     }
 
     void erase_index(const index_type& idx) {
@@ -877,18 +921,21 @@ public:
 
         detach(idx);
 
+        _table[idx].value.~ValueType();
         _table[idx].state = slot_state::Deleted;
+        _size--;
     }
 
 private:
     std::unique_ptr<Entry[]> _table;
     index_type _head = NullIdx;
     index_type _tail = NullIdx;
+    std::size_t _size = 0;
 };
 
 
-/*
-template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std::size_t MaxThreads = 16>
+
+template <typename KeyType, typename ValueType, std::size_t Capacity = 4 * 1024, std::size_t MaxThreads = 32>
 class Lv3_SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
 public:
     static constexpr const char* name() noexcept { return "Lv3_SPSCBuffer_DeferredFlatLRU"; }
@@ -897,7 +944,7 @@ public:
 
 private:
 
-    using cacheMap = LinkedFlatMap<KeyType, typename cacheList::iterator, Capacity>;
+    using cacheMap = LinkedFlatMap<KeyType, ValueType, Capacity>;
     using SPSCBuffer = SPSC_RingBufferUltraFast<KeyType, Capacity / (4 * MaxThreads)>;
 
     static constexpr std::size_t CacheLine = 64; // Some hardcode :)
@@ -928,15 +975,13 @@ private:
 
         // Iterate only for set bits
         while (mask > 0) {
-            int idx = std::countr_zero(mask); // Index by set bit
+            int buf_idx = std::countr_zero(mask); // Index by set bit
+            KeyType key_from_buffer;
 
-            KeyType key_to_refresh;
-            while (_update_buffers[idx].pop(key_to_refresh)) {
-                auto it = _collection.find(key_to_refresh);
-                if (it) {
-                    __builtin_prefetch(&(*it), 1, 3); // Doubtful, but okey :) It designed for heavy payload
-
-                    _freq_list.splice(_freq_list.begin(), _freq_list, *it);
+            while (_update_buffers[buf_idx].pop(key_from_buffer)) {
+                auto res = _collection.lookup(key_from_buffer); // Снова ищем, где этот ключ сейчас
+                if (res.found) {
+                    _collection.move_to_front(res.idx);
                 }
             }
 
@@ -948,50 +993,50 @@ public:
     std::optional<ValueType> get(const KeyType& key) noexcept {
         std::shared_lock lock(_rw_mtx);
 
-        auto it = _collection.find(key);
-        if (!it) [[unlikely]] return {};
-
-        __builtin_prefetch(&(*it)->second, 0, 1); // Doubtful, but okey :) It designed for heavy payload
+        auto res = _collection.lookup(key);
+        if (!res.found) [[unlikely]] return {};
 
         auto tid = get_thread_id();
         if (_update_buffers[tid].push(key)) {
             if (!(_dirty_mask.load(std::memory_order_relaxed) & (1ULL << tid))) {   // Test
-                _dirty_mask.fetch_or(1ULL << tid, std::memory_order_relaxed);       // Test & Set bit in mask
+                _dirty_mask.fetch_or(1ULL << tid, std::memory_order_release);       // Test & Set bit in mask
             }
         }
 
-        return (*it)->second;
+        return *(res.ptr);
     }
 
     template <typename T>
     void put(const KeyType& key, T&& value) {
-        std::unique_lock<std::shared_mutex> lock(_rw_mtx);
+        std::unique_lock lock(_rw_mtx);
 
         if (_dirty_mask.load(std::memory_order_relaxed)) {
-            apply_updates(); // Apply cummulative updates by writers
+            apply_updates();
         }
 
-        auto it = _collection.find(key);
-        if (it) {
-            (*it)->second = std::forward<T>(value);
-        } else {
-            if (_freq_list.size() == Capacity) {
-                apply_updates(); // Emergency apply
+        auto res = _collection.lookup(key);
 
-                _collection.erase(_freq_list.back().first);
-                _freq_list.pop_back();
+        if (res.found) {
+            *(res.ptr) = std::forward<T>(value);
+            _collection.move_to_front(res.idx);
+        } else {
+            if (_collection.size() >= Capacity) {
+                if (_dirty_mask.load(std::memory_order_relaxed)) {
+                    apply_updates();
+                }
+
+                _collection.erase_index(_collection.get_tail());
+                res.idx = _collection.assign_slot(key);
             }
-            _freq_list.emplace_front(key, std::forward<T>(value));
-            _collection.insert(key, _freq_list.begin());
+
+            _collection.emplace_at(res.idx, key, std::forward<T>(value));
+            _collection.move_to_front(res.idx);
         }
     }
-
 private:
-    alignas(CacheLine) PaddedSPSC _update_buffers[MaxThreads];
-    alignas(CacheLine) std::atomic<uint64_t> _dirty_mask{0};
+    alignas(CacheLine) PaddedSPSC               _update_buffers[MaxThreads];
+    alignas(CacheLine) std::atomic<uint64_t>    _dirty_mask{0};
 
-    cacheList           _freq_list;
     cacheMap            _collection;
     std::shared_mutex   _rw_mtx;
 };
-*/
