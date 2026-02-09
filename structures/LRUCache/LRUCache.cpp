@@ -761,6 +761,108 @@ private:
 *   TODO:                       get_hash_idx & next_slot
 */
 
+
+template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
+class LinkedFlatMap : private NonCopyableNonMoveable { // Open Addressing table with Linear Probing
+public:
+    using index_type = std::conditional_t<(Capacity <= 65535), uint16_t, uint32_t>;
+    static constexpr index_type NullIdx = std::numeric_limits<index_type>::max();
+
+    enum class slot_state : uint8_t { Empty = 0, Occupied = 1, Deleted = 2 };
+
+    static constexpr const char* name() noexcept { return "LinkedFlatMap"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
+
+private:
+    struct Entry {
+        key_type   key;
+        value_type value;
+        index_type next = NullIdx;
+        index_type prev = NullIdx;
+        slot_state state = slot_state::Empty;
+    };
+
+private:
+    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
+    static_assert(isPowerOfTwo(Capacity), "Capacity must be power of 2");
+    static constexpr std::size_t TableSize = Capacity * 2; // Load factor 0.5
+    static constexpr std::size_t Mask = TableSize - 1;
+
+private:
+    std::size_t calculate_hash_idx(const KeyType& key) const noexcept {
+        return std::hash<KeyType>{}(key) & Mask;
+    }
+
+    std::size_t next_slot(std::size_t current_idx) const noexcept {
+        return (current_idx + 1) & Mask;
+    }
+
+public:
+    LinkedFlatMap() : _table(std::make_unique<Entry[]>(TableSize)) {}
+
+    std::pair<value_type*, index_type> find_index(const key_type& key) const {
+        std::size_t hash = calculate_hash_idx(key);
+
+        for (std::size_t i = 0; i < TableSize; ++i) {
+            std::size_t idx = (hash + i) & Mask;
+
+            if (_table[idx].state == slot_state::Empty) return {nullptr, NullIdx};
+            if (_table[idx].state == slot_state::Occupied && _table[idx].key == key) {
+                return { &_table[idx].value, static_cast<index_type>(idx) };
+            }
+        }
+
+        return {nullptr, NullIdx};
+    }
+
+    void assign_slot(const key_type& key, value_type val) {
+        std::size_t hash = calculate_hash_idx(key);
+        index_type first_del_idx_wth_same_key = NullIdx;
+
+        for (std::size_t i = 0; i < TableSize; ++i) {
+            std::size_t idx = (hash + i) & Mask;
+
+            if (_table[idx].state == slot_state::Empty) {
+                std::size_t target = (first_del_idx_wth_same_key != NullIdx) ? first_del_idx_wth_same_key
+                                                                             : static_cast<index_type>(idx);
+
+                _table[target].key = key;
+//                _table[target].value = std::move(val);
+                _table[idx].state == slot_state::Occupied;
+                return;
+            }
+
+            if (_table[idx].state == slot_state::Deleted && first_del_idx_wth_same_key == NullIdx) {
+                first_del_idx_wth_same_key = static_cast<index_type>(idx);
+            }
+        }
+
+        return; // unreachable
+    }
+/*
+    void erase(const key_type& key) {
+        std::size_t hash = std::hash<KeyType>{}(key) & Mask;
+
+        for (std::size_t i = 0; i < TableSize; ++i) {
+            std::size_t idx = (hash + i) & Mask;
+
+            if (!_table[idx].occupied && !_table[idx].deleted) return;
+            if (_table[idx].occupied && _table[idx].key == key) {
+                _table[idx].occupied = false;
+                _table[idx].deleted = true;
+                return;
+            }
+        }
+
+        return;
+    }
+*/
+private:
+    std::unique_ptr<Entry[]> _table;
+};
+
+
 /*
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std::size_t MaxThreads = 16>
 class Lv3_SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
@@ -770,7 +872,7 @@ public:
     using key_type = KeyType;
 
 private:
-    using cacheList = std::list<std::pair<KeyType, ValueType>>;
+//    using cacheList = std::list<std::pair<KeyType, ValueType>>;
     using cacheMap = LinearFlatMap<KeyType, typename cacheList::iterator, Capacity>;
     using SPSCBuffer = SPSC_RingBufferUltraFast<KeyType, Capacity / (4 * MaxThreads)>;
 
