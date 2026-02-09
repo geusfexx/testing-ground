@@ -756,9 +756,9 @@ private:
 *   TODO:                       _collection.move_to_front(...) in LRU
 *   TODO:                       enum class SlotState : uint8_t { Empty = 0, Occupied = 1, Deleted = 2 };
 *   TODO:                       _collection.get_tail()
-*   TODO:                       _collection.find_index(key)
-*   TODO:                       _collection.assign_slot(key);
-*   TODO:                       get_hash_idx & next_slot
+*   TODO:                       _collection.find_index(key)         ******      Done
+*   TODO:                       _collection.assign_slot(key);       ******      Done
+*   TODO:                       get_hash_idx & next_slot            ******      Done
 */
 
 
@@ -798,6 +798,38 @@ private:
         return (current_idx + 1) & Mask;
     }
 
+    void detach(const index_type& idx) {
+        Entry& current = _table[idx];
+        
+        if (current.next != NullIdx) _table[current.next] = current.prev;
+        else _tail = current.prev;
+        
+        if (current.prev != NullIdx) _table[current.prev] = current.next;
+        else _head = current.next;
+        
+        current.next = NullIdx;
+        current.prev = NullIdx;
+    }
+
+    void move_to_front(index_type idx) {
+        if (idx == _head || idx == NullIdx) return;
+
+        detach(idx);
+
+        push_front(idx);
+    }
+
+    void push_front(index_type idx) {
+        auto& current = _table[idx];
+        current.next = _head;
+        current.prev = NullIdx;
+
+        if (_head != NullIdx) { _table[_head].prev = idx; }
+        _head = idx;
+
+        if (_tail == NullIdx) _tail = idx;
+    }
+
 public:
     LinkedFlatMap() : _table(std::make_unique<Entry[]>(TableSize)) {}
 
@@ -816,7 +848,7 @@ public:
         return {nullptr, NullIdx};
     }
 
-    void assign_slot(const key_type& key, value_type val) {
+    void assign_slot(const key_type& key) {
         std::size_t hash = calculate_hash_idx(key);
         index_type first_del_idx_wth_same_key = NullIdx;
 
@@ -828,7 +860,6 @@ public:
                                                                              : static_cast<index_type>(idx);
 
                 _table[target].key = key;
-//                _table[target].value = std::move(val);
                 _table[idx].state == slot_state::Occupied;
                 return;
             }
@@ -840,26 +871,19 @@ public:
 
         return; // unreachable
     }
-/*
-    void erase(const key_type& key) {
-        std::size_t hash = std::hash<KeyType>{}(key) & Mask;
 
-        for (std::size_t i = 0; i < TableSize; ++i) {
-            std::size_t idx = (hash + i) & Mask;
+    void erase_index(const index_type& idx) {
+        if (idx == NullIdx || _table[idx].state != slot_state::Occupied) return;
 
-            if (!_table[idx].occupied && !_table[idx].deleted) return;
-            if (_table[idx].occupied && _table[idx].key == key) {
-                _table[idx].occupied = false;
-                _table[idx].deleted = true;
-                return;
-            }
-        }
+        detach(idx);
 
-        return;
+        _table[idx].state = slot_state::Deleted;
     }
-*/
+
 private:
     std::unique_ptr<Entry[]> _table;
+    index_type _head = NullIdx;
+    index_type _tail = NullIdx;
 };
 
 
@@ -867,13 +891,13 @@ private:
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std::size_t MaxThreads = 16>
 class Lv3_SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
 public:
-    static constexpr const char* name() noexcept { return "Lvl2_SPSCBuffer_DeferredFlatLRU"; }
+    static constexpr const char* name() noexcept { return "Lv3_SPSCBuffer_DeferredFlatLRU"; }
     using value_type = ValueType;
     using key_type = KeyType;
 
 private:
-//    using cacheList = std::list<std::pair<KeyType, ValueType>>;
-    using cacheMap = LinearFlatMap<KeyType, typename cacheList::iterator, Capacity>;
+
+    using cacheMap = LinkedFlatMap<KeyType, typename cacheList::iterator, Capacity>;
     using SPSCBuffer = SPSC_RingBufferUltraFast<KeyType, Capacity / (4 * MaxThreads)>;
 
     static constexpr std::size_t CacheLine = 64; // Some hardcode :)
