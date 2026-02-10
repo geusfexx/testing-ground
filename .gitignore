@@ -39,3 +39,8 @@
 
 # debug information files
 *.dwo
+perf.data*
+
+# log files
+*.log
+

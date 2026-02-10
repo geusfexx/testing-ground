@@ -858,7 +858,7 @@ public:
 
             idx = next_slot(idx);
         }
-        __builtin_unreachable(); // I' not sure, I hope :)
+        __builtin_unreachable(); // I'm not sure, I hope :)
     }
 
     template <typename... Args>
@@ -872,7 +872,7 @@ public:
         current.state = slot_state::Occupied;
         _size++;
     }
-
+/*
     std::pair<value_type*, index_type> find_index(const key_type& key) const {
         std::size_t hash = calculate_hash_idx(key);
 
@@ -887,7 +887,7 @@ public:
 
         return {nullptr, NullIdx};
     }
-
+*/
     index_type assign_slot(const key_type& key) {
         std::size_t idx = calculate_hash_idx(key);
         index_type first_del_idx_wth_same_key = NullIdx;
@@ -979,7 +979,7 @@ private:
             KeyType key_from_buffer;
 
             while (_update_buffers[buf_idx].pop(key_from_buffer)) {
-                auto res = _collection.lookup(key_from_buffer); // Снова ищем, где этот ключ сейчас
+                auto res = _collection.lookup(key_from_buffer);
                 if (res.found) {
                     _collection.move_to_front(res.idx);
                 }
