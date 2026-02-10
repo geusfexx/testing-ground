@@ -767,6 +767,7 @@ class LinkedFlatMap : private NonCopyableNonMoveable { // Open Addressing table 
 public:
     using index_type = std::conditional_t<(Capacity <= 65535), uint16_t, uint32_t>;
     static constexpr index_type NullIdx = std::numeric_limits<index_type>::max();
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
 
     enum class slot_state : uint8_t { Empty = 0, Occupied = 1, Deleted = 2 };
 
@@ -776,13 +777,24 @@ public:
 
 private:
     struct Entry {
-        key_type   key;
-        value_type value;
-        index_type next = NullIdx;
-        index_type prev = NullIdx;
-        slot_state state = slot_state::Empty;
+        value_type value;                       // sizeof(ValueType)
+        key_type   key;                         // 4 or 8 bytes
+
+        // meta
+        uint32_t   gen = 0;                     // 4 bytes // ABA protection
+        index_type next = NullIdx;              // 2 or 4 bytes
+        index_type prev = NullIdx;              // 2 or 4 bytes
+        slot_state state = slot_state::Empty;   // 1 byte
     };
 
+public:
+    const Entry& get_entry(index_type idx) const noexcept {
+        return _table[idx];
+    }
+
+/*    static_assert((sizeof(Entry) & (CacheLine - 1)) == 0,
+        "Entry crosses cache line boundary unoptimally!");
+*/
 private:
     static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
     static_assert(isPowerOfTwo(Capacity), "Capacity must be power of 2");
@@ -791,7 +803,12 @@ private:
 
 private:
 
-    struct LookupResult { ValueType* ptr; index_type idx; bool found; };
+    struct LookupResult {
+        ValueType* ptr;
+        index_type idx;
+        uint32_t   gen;
+        bool       found;
+    };
 
     std::size_t calculate_hash_idx(const KeyType& key) const noexcept {
         return std::hash<KeyType>{}(key) & Mask;
@@ -832,20 +849,24 @@ public:
         return _table[idx].state == slot_state::Occupied;
     }
 
-    std::size_t size() { return _size; }
+    bool is_valid_gen(index_type idx, uint32_t gen) const noexcept {
+        return _table[idx].state == slot_state::Occupied && _table[idx].gen == gen;
+    }
 
+    std::size_t size() { return _size; }
     index_type get_tail() { return _tail; }
+    index_type get_head() const noexcept { return _head; }
 
     LookupResult lookup(const KeyType& key) const {
         std::size_t idx = calculate_hash_idx(key);
         index_type first_del = NullIdx;
 
         for (std::size_t i = 0; i < TableSize; ++i) {
-            auto& current = _table[idx];
+            const auto& current = _table[idx];
 
             if (current.state == slot_state::Empty) {
                 index_type target = (first_del != NullIdx) ? first_del : static_cast<index_type>(idx);
-                return {nullptr, target, false};
+                return {nullptr, target, 0, false};
             }
 
             if (current.state == slot_state::Deleted && first_del == NullIdx) {
@@ -853,41 +874,27 @@ public:
             }
 
             if (current.state == slot_state::Occupied && current.key == key) {
-                return {&current.value, static_cast<index_type>(idx), true};
+                return {const_cast<ValueType*>(&current.value), static_cast<index_type>(idx), current.gen, true};
             }
 
             idx = next_slot(idx);
         }
         __builtin_unreachable(); // I'm not sure, I hope :)
+        return {nullptr, NullIdx, 0, false};
     }
 
     template <typename... Args>
     void emplace_at(index_type idx, const KeyType& key, Args&&... args) {
         auto& current = _table[idx];
-
         current.key = key;
+        current.gen++;
 
         new (&current.value) value_type(std::forward<Args>(args)...); // Memory had been allocated by assign_slot
 
         current.state = slot_state::Occupied;
         _size++;
     }
-/*
-    std::pair<value_type*, index_type> find_index(const key_type& key) const {
-        std::size_t hash = calculate_hash_idx(key);
 
-        for (std::size_t i = 0; i < TableSize; ++i) {
-            std::size_t idx = (hash + i) & Mask;
-
-            if (_table[idx].state == slot_state::Empty) return {nullptr, NullIdx};
-            if (_table[idx].state == slot_state::Occupied && _table[idx].key == key) {
-                return { &_table[idx].value, static_cast<index_type>(idx) };
-            }
-        }
-
-        return {nullptr, NullIdx};
-    }
-*/
     index_type assign_slot(const key_type& key) {
         std::size_t idx = calculate_hash_idx(key);
         index_type first_del_idx_wth_same_key = NullIdx;
@@ -910,6 +917,10 @@ public:
 
     void move_to_front(index_type idx) {
         if (idx == _head || idx == NullIdx) return;
+
+        Entry& curr = _table[idx];
+        if (curr.next != NullIdx) __builtin_prefetch(&_table[curr.next], 1, 3);
+        if (curr.prev != NullIdx) __builtin_prefetch(&_table[curr.prev], 1, 3);
 
         detach(idx);
 
@@ -943,19 +954,25 @@ public:
     using key_type = KeyType;
 
 private:
-
     using cacheMap = LinkedFlatMap<KeyType, ValueType, Capacity>;
-    using SPSCBuffer = SPSC_RingBufferUltraFast<KeyType, Capacity / (4 * MaxThreads)>;
+
+    struct UpdateOp {
+        cacheMap::index_type    idx;
+        uint32_t                gen;
+    };
+
+    using SPSCBuffer = SPSC_RingBufferUltraFast<UpdateOp, Capacity / (4 * MaxThreads)>;
 
     static constexpr std::size_t CacheLine = 64; // Some hardcode :)
     static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
 
 private:
-    struct alignas(64) PaddedSPSC : public SPSCBuffer {
-        char padding[64 - (sizeof(SPSCBuffer) % 64)];
+    struct alignas(CacheLine) PaddedSPSC : public SPSCBuffer {
+        char padding[CacheLine - (sizeof(SPSCBuffer) & (CacheLine - 1))];
     };
 
 private:
+
     static std::size_t get_thread_id() {
         static std::atomic<std::size_t> counter{0};
 
@@ -976,12 +993,13 @@ private:
         // Iterate only for set bits
         while (mask > 0) {
             int buf_idx = std::countr_zero(mask); // Index by set bit
-            KeyType key_from_buffer;
+            UpdateOp op;
 
-            while (_update_buffers[buf_idx].pop(key_from_buffer)) {
-                auto res = _collection.lookup(key_from_buffer);
-                if (res.found) {
-                    _collection.move_to_front(res.idx);
+            while (_update_buffers[buf_idx].pop(op)) {
+//                auto res = _collection.lookup(key_from_buffer);       Has been optimised
+                if (_collection.is_valid_gen(op.idx, op.gen)) {
+                    __builtin_prefetch(&_collection.get_entry(_collection.get_head()), 1, 3);
+                    _collection.move_to_front(op.idx);
                 }
             }
 
@@ -996,8 +1014,10 @@ public:
         auto res = _collection.lookup(key);
         if (!res.found) [[unlikely]] return {};
 
+        __builtin_prefetch(&_collection.get_entry(res.idx), 1, 3);
+
         auto tid = get_thread_id();
-        if (_update_buffers[tid].push(key)) {
+        if (_update_buffers[tid].push({res.idx, res.gen})) {
             if (!(_dirty_mask.load(std::memory_order_relaxed) & (1ULL << tid))) {   // Test
                 _dirty_mask.fetch_or(1ULL << tid, std::memory_order_release);       // Test & Set bit in mask
             }

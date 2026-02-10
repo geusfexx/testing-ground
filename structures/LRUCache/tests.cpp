@@ -110,9 +110,11 @@ void run_benchmark(const TestConfig& config) {
     std::chrono::duration<double> diff = end - start;
 
     double total_ops = (config.readers + config.writers) * config.iterations;
+    double avg_latency_ns = (diff.count() / total_ops) * 1e9;
 
     std::cout << "Time: " << diff.count() << " s \n"
               << "Ops/sec: " << (total_ops / diff.count()) / 1e6 << " M\n"
+              << "Avg Latency: " << avg_latency_ns << " ns\n"
               << "Misses: " << total_misses << "\n\n";
 }
 
@@ -131,34 +133,45 @@ void execute_scenario(const TestConfig& config) {
 
 int main()
 {
-    const long long iters = 1e6;
-    const int cache_sz = 4 * 1024;
-    const int k_range = (cache_sz * 12) / 10;
+    const long long iters = 1e7;
+    constexpr int cache_sz = 64 * 1024;
+    constexpr int k_range = (cache_sz * 12) / 10;
+    const int shards_amount = 32;
 
     TestConfig read_heavy  = {28, 4, cache_sz, k_range, key_amount, iters};
     TestConfig write_heavy = {4, 12, cache_sz, k_range, key_amount, iters};
     TestConfig balanced    = {4, 2, cache_sz, k_range, key_amount, iters};
 
+    using DataType = Payload<128>;
 
-    using Slow = StrictLRU<int, Payload<128>, cache_sz>;
-    using Spin = SpinlockedLRU<int, Payload<128>, cache_sz>;
-    using Def  = DeferredLRU<int, Payload<128>, cache_sz>;
-    using DefFM = DeferredFlatLRU<int, Payload<128>, cache_sz>;
-    using SPSCBDefFM = SPSCBuffer_DeferredFlatLRU<int, Payload<128>, cache_sz>;
-    using Lv2_SPSCBDefFM = Lv2_SPSCBuffer_DeferredFlatLRU<int, Payload<128>, cache_sz>;
-    using Lv3_SPSCBDefFM = Lv3_SPSCBuffer_DeferredFlatLRU<int, Payload<128>, cache_sz>;
+    using Slow = StrictLRU<int, DataType, cache_sz>;
+    using Spin = SpinlockedLRU<int, DataType, cache_sz>;
+    using Def  = DeferredLRU<int, DataType, cache_sz>;
+    using DefFM = DeferredFlatLRU<int, DataType, cache_sz>;
+    using SPSCBDefFM = SPSCBuffer_DeferredFlatLRU<int, DataType, cache_sz>;
+    using Lv2_SPSCBDefFM = Lv2_SPSCBuffer_DeferredFlatLRU<int, DataType, cache_sz>;
+    using Lv3_SPSCBDefFM = Lv3_SPSCBuffer_DeferredFlatLRU<int, DataType, cache_sz>;
 
-    using S_Slow = ShardedCache<StrictLRU, int, Payload<128>, cache_sz, 32>;
-    using S_Spin = ShardedCache<SpinlockedLRU, int, Payload<128>, cache_sz, 32>;
-    using S_Def  = ShardedCache<DeferredLRU, int, Payload<128>, cache_sz, 32>;
-    using S_DefFM = ShardedCache<DeferredFlatLRU, int, Payload<128>, cache_sz, 32>;
-    using S_SPSCBDefFM = ShardedCache<SPSCBuffer_DeferredFlatLRU, int, Payload<128>, cache_sz, 32>;
-    using S_Lv2_SPSCBDefFM = ShardedCache<Lv2_SPSCBuffer_DeferredFlatLRU, int, Payload<128>, cache_sz, 32>;
-    using S_Lv3_SPSCBDefFM = ShardedCache<Lv3_SPSCBuffer_DeferredFlatLRU, int, Payload<128>, cache_sz, 32>;
+    using S_Slow = ShardedCache<StrictLRU, int, DataType, cache_sz, shards_amount>;
+    using S_Spin = ShardedCache<SpinlockedLRU, int, DataType, cache_sz, shards_amount>;
+    using S_Def  = ShardedCache<DeferredLRU, int, DataType, cache_sz, shards_amount>;
+    using S_DefFM = ShardedCache<DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
+    using S_SPSCBDefFM = ShardedCache<SPSCBuffer_DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
+    using S_Lv2_SPSCBDefFM = ShardedCache<Lv2_SPSCBuffer_DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
+    using S_Lv3_SPSCBDefFM = ShardedCache<Lv3_SPSCBuffer_DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
 
 //    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(balanced);
 //    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(write_heavy);
-    execute_scenario<false,/* Slow, Spin, Def,*/ DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM,/* S_Slow, S_Spin, */S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
+//    execute_scenario<false,/* Slow, Spin, Def,*/ DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM,/* S_Slow, S_Spin, */S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
+
+//    execute_scenario<false, S_Lv2_SPSCBDefFM>(read_heavy);
+//    execute_scenario<false, S_Lv3_SPSCBDefFM>(read_heavy);
+
+//    execute_scenario<false, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM>(read_heavy);
+    execute_scenario<false, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
+
+//    execute_scenario<false, S_Slow, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
+//    execute_scenario<false, S_Slow, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
 /*
     execute_scenario<true, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(balanced);
     execute_scenario<true, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(write_heavy);
