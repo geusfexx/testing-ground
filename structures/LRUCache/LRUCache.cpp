@@ -4,7 +4,19 @@
 #include <mutex>
 #include <shared_mutex>
 #include <memory>
+#include <cassert>
+#include <bit>
+#include <concepts>
 #include <cstddef>
+
+template <auto Num>
+concept PowerOfTwoValue = std::unsigned_integral<decltype(Num)> && std::has_single_bit(Num);
+
+template <typename T>
+concept Hashable = requires(T a) {
+    { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
+};
+
 
 class NonCopyableNonMoveable {
 public:
@@ -141,6 +153,7 @@ private:
 *           division using bitwise "AND"
 */
 template <typename ValueType, std::size_t Capacity>
+requires PowerOfTwoValue<Capacity>
 class MPSC_TraceBuffer : private NonCopyableNonMoveable{    // Use EBO
 public:
     static constexpr const char* name() noexcept { return "MPSC_TraceBuffer"; }
@@ -148,9 +161,8 @@ public:
 
 private:
     static constexpr std::size_t CacheLine = 64; // Some hardcode :)
-    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
     static constexpr std::size_t Mask = Capacity - 1;
-    static_assert(isPowerOfTwo(Capacity), "Capacity must be power of 2");
+    static_assert(std::has_single_bit(Capacity), "Capacity must be power of 2");
 
 public:
     bool isItTime() const noexcept {
@@ -284,6 +296,7 @@ private:
 };
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
+requires PowerOfTwoValue<Capacity>
 class LinearFlatMap : private NonCopyableNonMoveable { // Open Addressing table with Linear Probing
     struct Entry {
         KeyType key;
@@ -298,8 +311,8 @@ public:
     using key_type = KeyType;
 
 private:
-    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
-    static_assert(isPowerOfTwo(Capacity), "Capacity must be power of 2");
+
+    static_assert(std::has_single_bit(Capacity), "Capacity must be power of 2");
     static constexpr std::size_t TableSize = Capacity * 2; // Load factor 0.5
     static constexpr std::size_t Mask = TableSize - 1;
 
@@ -395,7 +408,6 @@ private:
     }
 
 public:
-    DeferredFlatLRU() { }
 
     std::optional<ValueType> get(const KeyType& key) noexcept {
         std::shared_lock lock(_rw_mtx);
@@ -446,6 +458,7 @@ template <template<typename, typename, std::size_t> class CacheImpl,
     typename KeyType, typename ValueType,
     std::size_t TotalCapacity = 2 * 1024,
     std::size_t ShardsCount = 16>
+requires PowerOfTwoValue<ShardsCount>
 class ShardedCache : private NonCopyableNonMoveable {
     static constexpr std::size_t ShardCapacity = TotalCapacity / ShardsCount;
     static_assert(ShardCapacity >= 64, "Shard capacity too small!");
@@ -461,11 +474,10 @@ public:
 
 private:
     static constexpr std::size_t Mask = ShardsCount - 1;
-    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
     static_assert(TotalCapacity > 0, "TotalCapacity must be > 0");
     static_assert(ShardsCount > 0, "ShardsCount must be > 0");
-    static_assert(isPowerOfTwo(ShardsCount), "ShardsCount must be power of 2");
-    static_assert((alignof(Cache) & (alignof(Cache) - 1)) == 0, "Alignment must be power of 2");
+    static_assert(std::has_single_bit(ShardsCount), "ShardsCount must be power of 2");
+    static_assert(std::has_single_bit(alignof(Cache)), "Alignment must be power of 2");
 
     std::size_t get_shard_idx(const KeyType& key) const noexcept {
         return std::hash<KeyType>{}(key) & Mask;
@@ -494,11 +506,11 @@ private:
 
 
 template <typename ValueType, std::size_t Capacity>
+requires PowerOfTwoValue<Capacity>
 class SPSC_RingBufferUltraFast {
 
     static constexpr std::size_t CacheLine = 64; // Some hardcode :)
-    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
-    static_assert(isPowerOfTwo(Capacity), "ShardsCount must be power of 2");
+    static_assert(std::has_single_bit(Capacity), "ShardsCount must be power of 2");
     std::size_t increment(std::size_t i) const noexcept {
         return (i + 1) & (Capacity - 1);
     }
@@ -508,9 +520,10 @@ public:
 
 public:
     bool isItTime() const noexcept {
-        return (tail - head > (Capacity / 2));
+        return (tail_cache - head.load(std::memory_order_relaxed) > (Capacity / 2));
     }
 
+    [[nodiscard("SPSC push failed: buffer is full, data will be lost!")]]
     bool push(const ValueType& value) {
         const std::size_t curr_t = tail.load(std::memory_order_relaxed);
 
@@ -525,6 +538,7 @@ public:
         return true;
     }
 
+    [[nodiscard("SPSC pop failed: buffer is empty or update deferred, data will be lost!")]]
     bool pop(ValueType& value) {
         const std::size_t curr_h = head.load(std::memory_order_relaxed);
 
@@ -552,6 +566,7 @@ private:
 };
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std::size_t MaxThreads = 16>
+requires PowerOfTwoValue<MaxThreads>
 class SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
 public:
     static constexpr const char* name() noexcept { return "SPSCBuffer_DeferredFlatLRU"; }
@@ -643,6 +658,7 @@ private:
 };
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std::size_t MaxThreads = 16>
+requires PowerOfTwoValue<MaxThreads>
 class Lv2_SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
 public:
     static constexpr const char* name() noexcept { return "Lvl2_SPSCBuffer_DeferredFlatLRU"; }
@@ -761,8 +777,8 @@ private:
 *   TODO:                       get_hash_idx & next_slot            ******      Done
 */
 
-
-template <typename KeyType, typename ValueType, std::size_t Capacity = 1024>
+template <Hashable KeyType, typename ValueType, std::size_t Capacity = 1024>
+requires PowerOfTwoValue<Capacity>
 class LinkedFlatMap : private NonCopyableNonMoveable { // Open Addressing table with Linear Probing
 public:
     using index_type = std::conditional_t<(Capacity <= 65535), uint16_t, uint32_t>;
@@ -796,9 +812,9 @@ public:
         "Entry crosses cache line boundary unoptimally!");
 */
 private:
-    static constexpr bool isPowerOfTwo(std::size_t n) { return (n != 0) && (n & (n - 1)) == 0; }
-    static_assert(isPowerOfTwo(Capacity), "Capacity must be power of 2");
+    static_assert(std::has_single_bit(Capacity), "Capacity must be power of 2");
     static constexpr std::size_t TableSize = Capacity * 2; // Load factor 0.5
+    static_assert(TableSize == Capacity * 2, "Load factor must be 0.5");
     static constexpr std::size_t Mask = TableSize - 1;
 
 private:
@@ -861,7 +877,7 @@ public:
         std::size_t idx = calculate_hash_idx(key);
         index_type first_del = NullIdx;
 
-        for (std::size_t i = 0; i < TableSize; ++i) {
+        while (true) {
             const auto& current = _table[idx];
 
             if (current.state == slot_state::Empty) {
@@ -879,8 +895,11 @@ public:
 
             idx = next_slot(idx);
         }
-        __builtin_unreachable(); // I'm not sure, I hope :)
-        return {nullptr, NullIdx, 0, false};
+
+        // It can loop for eternity only if Load Factor > 1.0 (all slots are Occupied or Deleted)
+        // But since it has Capacity * 2 and there is no deletion of Empty slots, this is impossible.
+        assert(false && "LinkedFlatMap table size overflow or corrupted logic");
+        __builtin_unreachable(); // I'm sure
     }
 
     template <typename... Args>
@@ -912,7 +931,8 @@ public:
             idx = next_slot(idx);
         }
 
-        return NullIdx; // unreachable
+        assert(false && "LinkedFlatMap table size overflow or corrupted logic");
+        __builtin_unreachable(); // I'm sure
     }
 
     void move_to_front(index_type idx) {
@@ -932,7 +952,7 @@ public:
 
         detach(idx);
 
-        _table[idx].value.~ValueType();
+        _table[idx].value.~ValueType(); // Due to placement new
         _table[idx].state = slot_state::Deleted;
         _size--;
     }
@@ -945,8 +965,8 @@ private:
 };
 
 
-
-template <typename KeyType, typename ValueType, std::size_t Capacity = 4 * 1024, std::size_t MaxThreads = 32>
+template <Hashable KeyType, typename ValueType, std::size_t Capacity = 4 * 1024, std::size_t MaxThreads = 32>
+requires PowerOfTwoValue<MaxThreads>
 class Lv3_SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
 public:
     static constexpr const char* name() noexcept { return "Lv3_SPSCBuffer_DeferredFlatLRU"; }

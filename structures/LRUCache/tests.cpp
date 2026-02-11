@@ -160,9 +160,9 @@ int main()
     using S_Lv2_SPSCBDefFM = ShardedCache<Lv2_SPSCBuffer_DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
     using S_Lv3_SPSCBDefFM = ShardedCache<Lv3_SPSCBuffer_DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
 
-//    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(balanced);
-//    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(write_heavy);
-//    execute_scenario<false,/* Slow, Spin, Def,*/ DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM,/* S_Slow, S_Spin, */S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
+//    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(balanced);
+//    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(write_heavy);
+//    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
 
 //    execute_scenario<false, S_Lv2_SPSCBDefFM>(read_heavy);
 //    execute_scenario<false, S_Lv3_SPSCBDefFM>(read_heavy);
