@@ -1,4 +1,4 @@
-pref log with minimum perf/OS distorsion near the same clear execution:
+perf log with minimum perf/OS distorsion near the same clear execution:
 
 Preconditions:
     - Virtual machine (8 vCPUs) based on an 8C/16T physical processor.

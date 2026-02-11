@@ -5,6 +5,7 @@
 #include <chrono>
 #include <random>
 #include <array>
+#include <iomanip>
 #include "LRUCache.cpp"
 
 struct TestConfig {
@@ -14,6 +15,8 @@ struct TestConfig {
     int key_range;
     int key_amount;
     long long iterations;
+    int payload_size = 128;
+    int shards_amount = 32;
 };
 
 constexpr int key_amount = 100'000;
@@ -120,11 +123,20 @@ void run_benchmark(const TestConfig& config) {
 
 template<bool UseYield = false, typename... Caches>
 void execute_scenario(const TestConfig& config) {
-    std::cout << "================================================\n"
-              << "SCENARIO: Readers(" << config.readers << ") Writers(" << config.writers << ")\n"
-              << (UseYield ? "\t| YIELD MODE |" : "\t| NORMAL MODE |") << "\n"
-              << "CacheSize: " << config.cache_size << " KeyRange: " << config.key_range << "\n"
-              << "================================================\n" << std::endl;
+
+std::string scenario = "SCENARIO: Readers(" + std::to_string(config.readers) +
+                       ") Writers(" + std::to_string(config.writers) + ")";
+std::string mode = UseYield ? "| YIELD MODE |" : "| NORMAL MODE |";
+
+std::cout << "========================================================\n"
+          << std::setw(56) << std::left << scenario << "\n"
+          << std::setw(19) << "" << mode << "\n"
+          << "--------------------------------------------------------\n" // Разделитель для красоты
+          << std::left << std::setw(16) << "  CacheSize:"    << std::right << std::setw(10) << config.cache_size
+          << "   "     << std::left << std::setw(16) << "KeyRange:"      << std::right << std::setw(10) << config.key_range << "\n"
+          << std::left << std::setw(16) << "  Payload Size:" << std::right << std::setw(10) << config.payload_size
+          << "   "     << std::left << std::setw(16) << "Shards amount:" << std::right << std::setw(10) << config.shards_amount << "\n"
+          << "========================================================\n" << std::endl;
 
     (run_benchmark<Caches, UseYield>(config), ...);
 
@@ -136,29 +148,31 @@ int main()
     const long long iters = 1e7;
     constexpr int cache_sz = 64 * 1024;
     constexpr int k_range = (cache_sz * 12) / 10;
+    const int payload_size = 128;
     const int shards_amount = 32;
 
-    TestConfig read_heavy  = {28, 4, cache_sz, k_range, key_amount, iters};
-    TestConfig write_heavy = {4, 12, cache_sz, k_range, key_amount, iters};
-    TestConfig balanced    = {4, 2, cache_sz, k_range, key_amount, iters};
+    using DataType = Payload<payload_size>;
 
-    using DataType = Payload<128>;
+    TestConfig read_heavy  = {28, 4, cache_sz, k_range, key_amount, iters, payload_size, shards_amount};
+    TestConfig write_heavy = {4, 12, cache_sz, k_range, key_amount, iters, payload_size, shards_amount};
+    TestConfig balanced    = {4, 2, cache_sz, k_range, key_amount, iters, payload_size, shards_amount};
+
 
     using Slow = StrictLRU<int, DataType, cache_sz>;
     using Spin = SpinlockedLRU<int, DataType, cache_sz>;
     using Def  = DeferredLRU<int, DataType, cache_sz>;
     using DefFM = DeferredFlatLRU<int, DataType, cache_sz>;
-    using SPSCBDefFM = SPSCBuffer_DeferredFlatLRU<int, DataType, cache_sz>;
-    using Lv2_SPSCBDefFM = Lv2_SPSCBuffer_DeferredFlatLRU<int, DataType, cache_sz>;
-    using Lv3_SPSCBDefFM = Lv3_SPSCBuffer_DeferredFlatLRU<int, DataType, cache_sz>;
+    using SPSCBDefFM = Lv1_bdFlatLRU<int, DataType, cache_sz>;
+    using Lv2_SPSCBDefFM = Lv2_bdFlatLRU<int, DataType, cache_sz>;
+    using Lv3_SPSCBDefFM = Lv3_bdFlatLRU<int, DataType, cache_sz>;
 
     using S_Slow = ShardedCache<StrictLRU, int, DataType, cache_sz, shards_amount>;
     using S_Spin = ShardedCache<SpinlockedLRU, int, DataType, cache_sz, shards_amount>;
     using S_Def  = ShardedCache<DeferredLRU, int, DataType, cache_sz, shards_amount>;
     using S_DefFM = ShardedCache<DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
-    using S_SPSCBDefFM = ShardedCache<SPSCBuffer_DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
-    using S_Lv2_SPSCBDefFM = ShardedCache<Lv2_SPSCBuffer_DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
-    using S_Lv3_SPSCBDefFM = ShardedCache<Lv3_SPSCBuffer_DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
+    using S_SPSCBDefFM = ShardedCache<Lv1_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
+    using S_Lv2_SPSCBDefFM = ShardedCache<Lv2_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
+    using S_Lv3_SPSCBDefFM = ShardedCache<Lv3_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
 
 //    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(balanced);
 //    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(write_heavy);

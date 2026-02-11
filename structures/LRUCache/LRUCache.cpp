@@ -520,7 +520,7 @@ public:
 
 public:
     bool isItTime() const noexcept {
-        return (tail_cache - head.load(std::memory_order_relaxed) > (Capacity / 2));
+        return (tail.load(std::memory_order_relaxed) - head_cache > (Capacity / 2));
     }
 
     [[nodiscard("SPSC push failed: buffer is full, data will be lost!")]]
@@ -567,7 +567,7 @@ private:
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std::size_t MaxThreads = 16>
 requires PowerOfTwoValue<MaxThreads>
-class SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
+class Lv1_bdFlatLRU : private NonCopyableNonMoveable {
 public:
     static constexpr const char* name() noexcept { return "SPSCBuffer_DeferredFlatLRU"; }
     using value_type = ValueType;
@@ -659,7 +659,7 @@ private:
 
 template <typename KeyType, typename ValueType, std::size_t Capacity = 1024, std::size_t MaxThreads = 16>
 requires PowerOfTwoValue<MaxThreads>
-class Lv2_SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
+class Lv2_bdFlatLRU : private NonCopyableNonMoveable {
 public:
     static constexpr const char* name() noexcept { return "Lvl2_SPSCBuffer_DeferredFlatLRU"; }
     using value_type = ValueType;
@@ -967,7 +967,7 @@ private:
 
 template <Hashable KeyType, typename ValueType, std::size_t Capacity = 4 * 1024, std::size_t MaxThreads = 32>
 requires PowerOfTwoValue<MaxThreads>
-class Lv3_SPSCBuffer_DeferredFlatLRU : private NonCopyableNonMoveable {
+class Lv3_bdFlatLRU : private NonCopyableNonMoveable {
 public:
     static constexpr const char* name() noexcept { return "Lv3_SPSCBuffer_DeferredFlatLRU"; }
     using value_type = ValueType;
@@ -1073,6 +1073,7 @@ public:
             _collection.move_to_front(res.idx);
         }
     }
+
 private:
     alignas(CacheLine) PaddedSPSC               _update_buffers[MaxThreads];
     alignas(CacheLine) std::atomic<uint64_t>    _dirty_mask{0};
