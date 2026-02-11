@@ -29,14 +29,16 @@ struct alignas(64) Payload {
     uint64_t id;
     std::array<std::byte, PaddingSize> data;
 
-    Payload(uint64_t v = 0) : id(v) {
+    Payload(uint64_t v = 0) noexcept : id(v) {
         if constexpr (PaddingSize > 0) {
             // Avoid "empty object" optimization by the compiler
             data.fill(std::byte(v & 0xFF));
         }
     }
 
-    bool operator==(const Payload& other) const { return id == other.id; }
+    bool operator==(const Payload& other) const noexcept { return id == other.id; }
+
+    ~Payload() noexcept {}
 };
 
 namespace std {
@@ -162,34 +164,36 @@ int main()
     using Spin = SpinlockedLRU<int, DataType, cache_sz>;
     using Def  = DeferredLRU<int, DataType, cache_sz>;
     using DefFM = DeferredFlatLRU<int, DataType, cache_sz>;
-    using SPSCBDefFM = Lv1_bdFlatLRU<int, DataType, cache_sz>;
-    using Lv2_SPSCBDefFM = Lv2_bdFlatLRU<int, DataType, cache_sz>;
-    using Lv3_SPSCBDefFM = Lv3_bdFlatLRU<int, DataType, cache_sz>;
+    using Lv1_bdFM = Lv1_bdFlatLRU<int, DataType, cache_sz>;
+    using Lv2_bdFM = Lv2_bdFlatLRU<int, DataType, cache_sz>;
+    using Lv3_bdFM = Lv3_bdFlatLRU<int, DataType, cache_sz>;
+    using Lv4_bdFM = Lv4_bdFlatLRU<int, DataType, cache_sz>;
 
     using S_Slow = ShardedCache<StrictLRU, int, DataType, cache_sz, shards_amount>;
     using S_Spin = ShardedCache<SpinlockedLRU, int, DataType, cache_sz, shards_amount>;
     using S_Def  = ShardedCache<DeferredLRU, int, DataType, cache_sz, shards_amount>;
     using S_DefFM = ShardedCache<DeferredFlatLRU, int, DataType, cache_sz, shards_amount>;
-    using S_SPSCBDefFM = ShardedCache<Lv1_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
-    using S_Lv2_SPSCBDefFM = ShardedCache<Lv2_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
-    using S_Lv3_SPSCBDefFM = ShardedCache<Lv3_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
+    using S_Lv1_bdFM = ShardedCache<Lv1_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
+    using S_Lv2_bdFM = ShardedCache<Lv2_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
+    using S_Lv3_bdFM = ShardedCache<Lv3_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
+    using S_Lv4_bdFM = ShardedCache<Lv4_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
 
-//    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(balanced);
-//    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(write_heavy);
-//    execute_scenario<false, Slow, Spin, Def, DefFM, SPSCBDefFM, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
+//    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM>(balanced);
+//    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM>(write_heavy);
+//    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
 
-//    execute_scenario<false, S_Lv2_SPSCBDefFM>(read_heavy);
-//    execute_scenario<false, S_Lv3_SPSCBDefFM>(read_heavy);
+//    execute_scenario<false, S_Lv2_bdFM>(read_heavy);
+//    execute_scenario<false, S_Lv3_bdFM>(read_heavy);
 
-//    execute_scenario<false, Lv2_SPSCBDefFM, Lv3_SPSCBDefFM>(read_heavy);
-    execute_scenario<false, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
+//    execute_scenario<false, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM>(read_heavy);
+    execute_scenario<false, S_Lv2_bdFM, S_Lv3_bdFM, S_Lv4_bdFM>(read_heavy);
 
-//    execute_scenario<false, S_Slow, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
-//    execute_scenario<false, S_Slow, S_Lv2_SPSCBDefFM, S_Lv3_SPSCBDefFM>(read_heavy);
+//    execute_scenario<false, S_Slow, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
+//    execute_scenario<false, S_Slow, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
 /*
-    execute_scenario<true, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(balanced);
-    execute_scenario<true, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(write_heavy);
-    execute_scenario<true, Slow, Spin, Def, DefFM, SPSCBDefFM, S_Slow, S_Spin, S_Def, S_DefFM, S_SPSCBDefFM>(read_heavy);
+    execute_scenario<true, Slow, Spin, Def, DefFM, Lv1_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM>(balanced);
+    execute_scenario<true, Slow, Spin, Def, DefFM, Lv1_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM>(write_heavy);
+    execute_scenario<true, Slow, Spin, Def, DefFM, Lv1_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM>(read_heavy);
 */
     return 0;
 }

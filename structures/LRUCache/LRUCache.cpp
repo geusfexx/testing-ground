@@ -1083,6 +1083,243 @@ private:
 };
 
 
+template <Hashable KeyType, typename ValueType, std::size_t Capacity = 1024>
+requires PowerOfTwoValue<Capacity>
+class Lv2_LinkedFlatMap : private NonCopyableNonMoveable { // Open Addressing table with Linear Probing
+public:
+    using index_type = std::conditional_t<(Capacity <= 65535), uint16_t, uint32_t>;
+    static constexpr index_type NullIdx = std::numeric_limits<index_type>::max();
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+
+    enum class slot_state : uint8_t { Empty = 0, Occupied = 1, Deleted = 2 };
+
+    static constexpr const char* name() noexcept { return "Lv2_LinkedFlatMap"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
+
+private:
+/*    struct Entry {
+        value_type value;                       // sizeof(ValueType)
+        key_type   key;                         // 4 or 8 bytes
+
+        // meta
+        uint32_t   gen = 0;                     // 4 bytes // ABA protection
+        index_type next = NullIdx;              // 2 or 4 bytes
+        index_type prev = NullIdx;              // 2 or 4 bytes
+        slot_state state = slot_state::Empty;   // 1 byte
+    };*/
+    struct Entry {
+        // Group 1: Metadata (Hot)
+        std::atomic<uint32_t> gen{0};           // 4 bytes
+        std::atomic<slot_state> state{slot_state::Empty};   // 1 byte
+
+        // Group 2: Search (Hot)
+        key_type key;                           // 8 bytes
+
+        // Group 3: LRU Links (Warm)
+        index_type next = NullIdx;                        // 4 bytes
+        index_type prev = NullIdx;                        // 4 bytes
+
+        // Group 4: Data (Cold/Warm)
+        value_type value;                       // sizeof(value_type)
+    };
+public:
+    const Entry& get_entry(index_type idx) const noexcept {
+        return _table[idx];
+    }
+
+    Entry& get_entry_mutable(index_type idx) noexcept{
+        return _table[idx];
+    }
+
+/*    static_assert((sizeof(Entry) & (CacheLine - 1)) == 0,
+        "Entry crosses cache line boundary unoptimally!");
+*/
+private:
+    static_assert(std::has_single_bit(Capacity), "Capacity must be power of 2");
+    static constexpr std::size_t TableSize = Capacity * 2; // Load factor 0.5
+    static_assert(TableSize == Capacity * 2, "Load factor must be 0.5");
+    static constexpr std::size_t Mask = TableSize - 1;
+
+private:
+
+    struct LookupResult {
+        ValueType* ptr;
+        index_type idx;
+        uint32_t   gen;
+        bool       found;
+    };
+
+    std::size_t calculate_hash_idx(const KeyType& key) const noexcept {
+        return std::hash<KeyType>{}(key) & Mask;
+    }
+
+    std::size_t next_slot(std::size_t current_idx) const noexcept {
+        return (current_idx + 1) & Mask;
+    }
+
+    void detach(const index_type& idx) noexcept {
+        Entry& current = _table[idx];
+
+        if (current.next != NullIdx) _table[current.next].prev = current.prev;
+        else _tail = current.prev;
+
+        if (current.prev != NullIdx) _table[current.prev].next = current.next;
+        else _head = current.next;
+
+        current.next = NullIdx;
+        current.prev = NullIdx;
+    }
+
+    void push_front(index_type idx) noexcept {
+        auto& current = _table[idx];
+        current.next = _head;
+        current.prev = NullIdx;
+
+        if (_head != NullIdx) { _table[_head].prev = idx; }
+        _head = idx;
+
+        if (_tail == NullIdx) _tail = idx;
+    }
+
+public:
+    Lv2_LinkedFlatMap() noexcept : _table(std::make_unique<Entry[]>(TableSize)) {}
+
+    bool is_occupied(index_type idx) const noexcept {
+        return _table[idx].state == slot_state::Occupied;
+    }
+
+    bool is_valid_gen(index_type idx, uint32_t gen) const noexcept {
+        return _table[idx].state == slot_state::Occupied && _table[idx].gen == gen;
+    }
+
+    std::size_t size() const noexcept { return _size; }
+    index_type get_tail() const noexcept { return _tail; }
+    index_type get_head() const noexcept { return _head; }
+
+    LookupResult lookup(const KeyType& key) const noexcept {
+        std::size_t idx = calculate_hash_idx(key);
+        index_type first_del = NullIdx;
+
+        while (true) {
+            const auto& current = _table[idx];
+
+            if (current.state == slot_state::Empty) {
+                index_type target = (first_del != NullIdx) ? first_del : static_cast<index_type>(idx);
+                return {nullptr, target, 0, false};
+            }
+
+            if (current.state == slot_state::Deleted && first_del == NullIdx) {
+                first_del = static_cast<index_type>(idx);
+            }
+
+            if (current.state == slot_state::Occupied && current.key == key) {
+                return {const_cast<ValueType*>(&current.value), static_cast<index_type>(idx), current.gen, true};
+            }
+
+            idx = next_slot(idx);
+        }
+
+        // It can loop for eternity only if Load Factor > 1.0 (all slots are Occupied or Deleted)
+        // But since it has Capacity * 2 and there is no deletion of Empty slots, this is impossible.
+        assert(false && "LinkedFlatMap table size overflow or corrupted logic");
+        __builtin_unreachable(); // I'm sure
+    }
+
+    LookupResult get_lockless(const KeyType& key) const noexcept {
+        std::size_t idx = calculate_hash_idx(key);
+
+        for (std::size_t i = 0; i < TableSize; ++i) {
+            const auto& current = _table[idx];
+
+            uint32_t gen1 = current.gen.load(std::memory_order_acquire);
+            slot_state current_state = current.state.load(std::memory_order_relaxed);
+
+            if (current_state == slot_state::Empty) return {nullptr, NullIdx, 0, false};;
+
+            if (current_state == slot_state::Occupied && current.key == key) {
+                ValueType val = current.value;
+                uint32_t gen2 = current.gen.load(std::memory_order_acquire); // MB on
+
+                if (gen1 == gen2 && (gen1 % 2 == 0)) { // value is still actual
+                    return {const_cast<ValueType*>(&current.value), static_cast<index_type>(idx), gen1, true};
+                } else {
+                    return {nullptr, NullIdx, 0, false};
+                }
+            }
+            current = next_slot(idx);
+        }
+
+        return {nullptr, NullIdx, 0, false};;
+    }
+
+    template <typename... Args>
+    void emplace_at(index_type idx, const KeyType& key, Args&&... args) noexcept {
+    static_assert(std::is_nothrow_constructible_v<ValueType, Args...>,
+                  "ValueType must be nothrow constructible for safety");
+
+        auto& current = _table[idx];
+        current.key = key;
+        current.gen++;
+
+        new (&current.value) value_type(std::forward<Args>(args)...); // Memory had been allocated by assign_slot
+
+        current.state = slot_state::Occupied;
+        current.gen++;
+        _size++;
+    }
+
+    index_type assign_slot(const key_type& key) noexcept {
+        std::size_t idx = calculate_hash_idx(key);
+        index_type first_del_idx_wth_same_key = NullIdx;
+
+        while (true) {
+            if (_table[idx].state == slot_state::Empty) {
+                return (first_del_idx_wth_same_key != NullIdx) ? first_del_idx_wth_same_key
+                                                                             : static_cast<index_type>(idx);
+            }
+
+            if (_table[idx].state == slot_state::Deleted && first_del_idx_wth_same_key == NullIdx) {
+                first_del_idx_wth_same_key = static_cast<index_type>(idx);
+            }
+
+            idx = next_slot(idx);
+        }
+
+        assert(false && "LinkedFlatMap table size overflow or corrupted logic");
+        __builtin_unreachable(); // I'm sure
+    }
+
+    void move_to_front(index_type idx) noexcept {
+        if (idx == _head || idx == NullIdx) return;
+
+        Entry& curr = _table[idx];
+        if (curr.next != NullIdx) __builtin_prefetch(&_table[curr.next], 1, 3);
+        if (curr.prev != NullIdx) __builtin_prefetch(&_table[curr.prev], 1, 3);
+
+        detach(idx);
+
+        push_front(idx);
+    }
+
+    void erase_index(const index_type& idx) noexcept {
+        if (idx == NullIdx || _table[idx].state != slot_state::Occupied) return;
+
+        detach(idx);
+
+        _table[idx].value.~ValueType(); // Due to placement new
+        _table[idx].state = slot_state::Deleted;
+        _table[idx].gen++;
+        _size--;
+    }
+
+private:
+    std::unique_ptr<Entry[]> _table;
+    index_type _head = NullIdx;
+    index_type _tail = NullIdx;
+    std::size_t _size = 0;
+};
+
 /*
 *   TODO:   Summary       Almost wait-free Read
 *   TODO:                       uses Generation as Sequence Lock in FlatMap
@@ -1094,12 +1331,12 @@ template <Hashable KeyType, typename ValueType, std::size_t Capacity = 4 * 1024,
 requires PowerOfTwoValue<MaxThreads>
 class Lv4_bdFlatLRU : private NonCopyableNonMoveable {
 public:
-    static constexpr const char* name() noexcept { return "Lv3_SPSCBuffer_DeferredFlatLRU"; }
+    static constexpr const char* name() noexcept { return "Lv4_SPSCBuffer_DeferredFlatLRU"; }
     using value_type = ValueType;
     using key_type = KeyType;
 
 private:
-    using cacheMap = LinkedFlatMap<KeyType, ValueType, Capacity>;
+    using cacheMap = Lv2_LinkedFlatMap<KeyType, ValueType, Capacity>;
 
     struct UpdateOp {
         cacheMap::index_type    idx;
@@ -1141,7 +1378,6 @@ private:
             UpdateOp op;
 
             while (_update_buffers[buf_idx].pop(op)) {
-//                auto res = _collection.lookup(key_from_buffer);       Has been optimised
                 if (_collection.is_valid_gen(op.idx, op.gen)) {
                     __builtin_prefetch(&_collection.get_entry(_collection.get_head()), 1, 3);
                     _collection.move_to_front(op.idx);
@@ -1154,12 +1390,10 @@ private:
 
 public:
     std::optional<ValueType> get(const KeyType& key) noexcept {
-        std::shared_lock lock(_rw_mtx);
-
         auto res = _collection.lookup(key);
         if (!res.found) [[unlikely]] return {};
 
-        __builtin_prefetch(&_collection.get_entry(res.idx), 1, 3);
+//        __builtin_prefetch(&_collection.get_entry(res.idx), 1, 3);
 
         auto tid = get_thread_id();
         if (_update_buffers[tid].push({res.idx, res.gen})) {
@@ -1182,14 +1416,16 @@ public:
         auto res = _collection.lookup(key);
 
         if (res.found) {
+            auto& entry = _collection.get_entry_mutable(res.idx);
+
+            uint32_t current_gen = entry.gen.load(std::memory_order_relaxed);
+            entry.gen.store(current_gen + 1, std::memory_order_release);
             *(res.ptr) = std::forward<T>(value);
+
+            entry.gen.store(current_gen + 2, std::memory_order_release);
             _collection.move_to_front(res.idx);
         } else {
             if (_collection.size() >= Capacity) {
-                if (_dirty_mask.load(std::memory_order_relaxed)) {
-                    apply_updates();
-                }
-
                 _collection.erase_index(_collection.get_tail());
                 res.idx = _collection.assign_slot(key);
             }
