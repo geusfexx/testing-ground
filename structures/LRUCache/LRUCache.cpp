@@ -1081,3 +1081,128 @@ private:
     cacheMap            _collection;
     std::shared_mutex   _rw_mtx;
 };
+
+
+/*
+*   TODO:   Summary       Almost wait-free Read
+*   TODO:                       uses Generation as Sequence Lock in FlatMap
+*   TODO:                       std::atomic<slot_state>
+*   TODO:                       lock-free get()
+*   TODO:                       unique_lock for Writer
+*/
+template <Hashable KeyType, typename ValueType, std::size_t Capacity = 4 * 1024, std::size_t MaxThreads = 32>
+requires PowerOfTwoValue<MaxThreads>
+class Lv4_bdFlatLRU : private NonCopyableNonMoveable {
+public:
+    static constexpr const char* name() noexcept { return "Lv3_SPSCBuffer_DeferredFlatLRU"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
+
+private:
+    using cacheMap = LinkedFlatMap<KeyType, ValueType, Capacity>;
+
+    struct UpdateOp {
+        cacheMap::index_type    idx;
+        uint32_t                gen;
+    };
+
+    using SPSCBuffer = SPSC_RingBufferUltraFast<UpdateOp, Capacity / (4 * MaxThreads)>;
+
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
+
+private:
+    struct alignas(CacheLine) PaddedSPSC : public SPSCBuffer {
+        char padding[CacheLine - (sizeof(SPSCBuffer) & (CacheLine - 1))];
+    };
+
+private:
+
+    static std::size_t get_thread_id() {
+        static std::atomic<std::size_t> counter{0};
+
+        // rollcall
+        thread_local std::size_t id = std::numeric_limits<std::size_t>::max();
+
+        if (id == std::numeric_limits<std::size_t>::max()) [[unlikely]] {
+            id = counter.fetch_add(1, std::memory_order_relaxed) & (MaxThreads - 1);
+        }
+
+        return id;
+    }
+
+    void apply_updates() {
+        uint64_t mask = _dirty_mask.exchange(0, std::memory_order_acquire);
+        if (mask == 0) return;
+
+        // Iterate only for set bits
+        while (mask > 0) {
+            int buf_idx = std::countr_zero(mask); // Index by set bit
+            UpdateOp op;
+
+            while (_update_buffers[buf_idx].pop(op)) {
+//                auto res = _collection.lookup(key_from_buffer);       Has been optimised
+                if (_collection.is_valid_gen(op.idx, op.gen)) {
+                    __builtin_prefetch(&_collection.get_entry(_collection.get_head()), 1, 3);
+                    _collection.move_to_front(op.idx);
+                }
+            }
+
+            mask &= (mask - 1); // Next bit
+        }
+    }
+
+public:
+    std::optional<ValueType> get(const KeyType& key) noexcept {
+        std::shared_lock lock(_rw_mtx);
+
+        auto res = _collection.lookup(key);
+        if (!res.found) [[unlikely]] return {};
+
+        __builtin_prefetch(&_collection.get_entry(res.idx), 1, 3);
+
+        auto tid = get_thread_id();
+        if (_update_buffers[tid].push({res.idx, res.gen})) {
+            if (!(_dirty_mask.load(std::memory_order_relaxed) & (1ULL << tid))) {   // Test
+                _dirty_mask.fetch_or(1ULL << tid, std::memory_order_release);       // Test & Set bit in mask
+            }
+        }
+
+        return *(res.ptr);
+    }
+
+    template <typename T>
+    void put(const KeyType& key, T&& value) {
+        std::unique_lock lock(_rw_mtx);
+
+        if (_dirty_mask.load(std::memory_order_relaxed)) {
+            apply_updates();
+        }
+
+        auto res = _collection.lookup(key);
+
+        if (res.found) {
+            *(res.ptr) = std::forward<T>(value);
+            _collection.move_to_front(res.idx);
+        } else {
+            if (_collection.size() >= Capacity) {
+                if (_dirty_mask.load(std::memory_order_relaxed)) {
+                    apply_updates();
+                }
+
+                _collection.erase_index(_collection.get_tail());
+                res.idx = _collection.assign_slot(key);
+            }
+
+            _collection.emplace_at(res.idx, key, std::forward<T>(value));
+            _collection.move_to_front(res.idx);
+        }
+    }
+
+private:
+    alignas(CacheLine) PaddedSPSC               _update_buffers[MaxThreads];
+    alignas(CacheLine) std::atomic<uint64_t>    _dirty_mask{0};
+
+    cacheMap            _collection;
+    std::shared_mutex   _rw_mtx;
+};
