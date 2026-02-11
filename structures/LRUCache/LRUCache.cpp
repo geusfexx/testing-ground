@@ -1378,8 +1378,9 @@ private:
             UpdateOp op;
 
             while (_update_buffers[buf_idx].pop(op)) {
+            __builtin_prefetch(&_collection.get_entry(_collection.get_head()), 1, 3);
                 if (_collection.is_valid_gen(op.idx, op.gen)) {
-                    __builtin_prefetch(&_collection.get_entry(_collection.get_head()), 1, 3);
+//                    __builtin_prefetch(&_collection.get_entry(_collection.get_head()), 1, 3);
                     _collection.move_to_front(op.idx);
                 }
             }
@@ -1393,10 +1394,10 @@ public:
         auto res = _collection.lookup(key);
         if (!res.found) [[unlikely]] return {};
 
-//        __builtin_prefetch(&_collection.get_entry(res.idx), 1, 3);
+        __builtin_prefetch(res.ptr, 0, 3);
 
         auto tid = get_thread_id();
-        if (_update_buffers[tid].push({res.idx, res.gen})) {
+        if (_update_buffers[tid].push({res.idx, res.gen})) [[likely]] {
             if (!(_dirty_mask.load(std::memory_order_relaxed) & (1ULL << tid))) {   // Test
                 _dirty_mask.fetch_or(1ULL << tid, std::memory_order_release);       // Test & Set bit in mask
             }

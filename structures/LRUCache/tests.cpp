@@ -82,13 +82,19 @@ void run_benchmark(const TestConfig& config) {
     const auto& keys = data.keys;
 
     std::cout << "Testing: " << Cache::name() << (UseYield ? " (with yield)" : "") << "..." << std::endl;
-
-    auto start = std::chrono::high_resolution_clock::now();
+    std::atomic<bool> start_signal{false};
 
     for (int i = 0; i < config.readers; ++i) {
-        threads.emplace_back([&cache, &config, &total_misses, &keys, i]() {
+        threads.emplace_back([&cache, &config, &total_misses, &keys, &start_signal, i]() {
             int local_misses = 0;
             std::size_t offset = (i * 100) & (config.key_amount - 1); // Distribute readers across different areas
+
+            for (long long j = 0; j < 1e5; ++j) {
+                if (!cache.get(keys[(offset + j) & (config.key_amount - 1)]));
+                if constexpr (UseYield) std::this_thread::yield();
+            }
+
+            while(!start_signal.load(std::memory_order_acquire));
 
             for (long long j = 0; j < config.iterations; ++j) {
                 if (!cache.get(keys[(offset + j) & (config.key_amount - 1)])) local_misses++;
@@ -99,8 +105,17 @@ void run_benchmark(const TestConfig& config) {
     }
 
     for (int i = 0; i < config.writers; ++i) {
-        threads.emplace_back([&cache, &config, &keys, i]() {
+        threads.emplace_back([&cache, &config, &keys, &start_signal, i]() {
             typename Cache::value_type val{42};
+
+            for (long long j = 0; j < 1e5; ++j) {
+                std::size_t offset = ((config.readers + i) * 100) & (config.key_amount - 1); // Distribute writers across different areas
+                cache.put((keys[(offset + j) & (config.key_amount - 1)]), val);
+                if constexpr (UseYield) std::this_thread::yield();
+            }
+
+            while(!start_signal.load(std::memory_order_acquire));
+
             for (long long j = 0; j < config.iterations; ++j) {
                 std::size_t offset = ((config.readers + i) * 100) & (config.key_amount - 1); // Distribute writers across different areas
                 cache.put((keys[(offset + j) & (config.key_amount - 1)]), val);
@@ -108,6 +123,11 @@ void run_benchmark(const TestConfig& config) {
             }
         });
     }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    start_signal.store(true, std::memory_order_release);
+    auto start = std::chrono::high_resolution_clock::now();
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
 
     for (auto& t : threads) t.join();
 
