@@ -1098,31 +1098,26 @@ public:
     using key_type = KeyType;
 
 private:
-/*    struct Entry {
-        value_type value;                       // sizeof(ValueType)
-        key_type   key;                         // 4 or 8 bytes
 
-        // meta
-        uint32_t   gen = 0;                     // 4 bytes // ABA protection
-        index_type next = NullIdx;              // 2 or 4 bytes
-        index_type prev = NullIdx;              // 2 or 4 bytes
-        slot_state state = slot_state::Empty;   // 1 byte
-    };*/
-    struct Entry {
+    struct /*alignas(CacheLine / 2)*/ Entry {
         // Group 1: Metadata (Hot)
-        std::atomic<uint32_t> gen{0};           // 4 bytes
-        std::atomic<slot_state> state{slot_state::Empty};   // 1 byte
+        std::atomic<uint32_t> gen{0};                       // 4 bytes
+        std::atomic<slot_state> state{slot_state::Empty};   // 1 byte (padded to 4 by compiler)
 
         // Group 2: Search (Hot)
-        key_type key;                           // 8 bytes
+        key_type key;                                       // 8 bytes
 
         // Group 3: LRU Links (Warm)
-        index_type next = NullIdx;                        // 4 bytes
-        index_type prev = NullIdx;                        // 4 bytes
+        index_type next = NullIdx;                          // 4 bytes
+        index_type prev = NullIdx;                          // 4 bytes
 
         // Group 4: Data (Cold/Warm)
-        value_type value;                       // sizeof(value_type)
+        value_type value;                                   // sizeof(value_type)
     };
+
+/*    static_assert(sizeof(Entry) < 64 xor (sizeof(Entry) & (CacheLine - 1)) == 0,
+        "Entry crosses cache line boundary unoptimally!");
+*/
 public:
     const Entry& get_entry(index_type idx) const noexcept {
         return _table[idx];
@@ -1132,9 +1127,7 @@ public:
         return _table[idx];
     }
 
-/*    static_assert((sizeof(Entry) & (CacheLine - 1)) == 0,
-        "Entry crosses cache line boundary unoptimally!");
-*/
+
 private:
     static_assert(std::has_single_bit(Capacity), "Capacity must be power of 2");
     static constexpr std::size_t TableSize = Capacity * 2; // Load factor 0.5
@@ -1233,39 +1226,46 @@ public:
             const auto& current = _table[idx];
 
             uint32_t gen1 = current.gen.load(std::memory_order_acquire);
+            if (gen1 & 1) return {nullptr, NullIdx, 0, false};  // value isn't actual
+
             slot_state current_state = current.state.load(std::memory_order_relaxed);
+            if (current_state == slot_state::Empty) return {nullptr, NullIdx, 0, false};
 
-            if (current_state == slot_state::Empty) return {nullptr, NullIdx, 0, false};;
+            if (current_state == slot_state::Occupied) {
+                std::atomic_ref<const KeyType> key_ref(current.key);
 
-            if (current_state == slot_state::Occupied && current.key == key) {
-                ValueType val = current.value;
-                uint32_t gen2 = current.gen.load(std::memory_order_acquire); // MB on
+                if (key_ref.load(std::memory_order_relaxed) == key) {
+                    ValueType val_copy = current.value;         // Thrust me, I know what i'm doing
 
-                if (gen1 == gen2 && (gen1 % 2 == 0)) { // value is still actual
-                    return {const_cast<ValueType*>(&current.value), static_cast<index_type>(idx), gen1, true};
-                } else {
-                    return {nullptr, NullIdx, 0, false};
+                    uint32_t gen2 = current.gen.load(std::memory_order_acquire);
+
+                    if (gen1 == gen2) {
+                        return {const_cast<ValueType*>(&current.value), static_cast<index_type>(idx), gen1, true};
+                    } else {
+                        return {nullptr, NullIdx, 0, false};
+                    }
                 }
             }
-            current = next_slot(idx);
+            idx = next_slot(idx);
         }
 
         return {nullptr, NullIdx, 0, false};;
     }
 
     template <typename... Args>
-    void emplace_at(index_type idx, const KeyType& key, Args&&... args) noexcept {
+    void emplace_at(index_type idx, const key_type& key, Args&&... args) noexcept {
     static_assert(std::is_nothrow_constructible_v<ValueType, Args...>,
                   "ValueType must be nothrow constructible for safety");
 
         auto& current = _table[idx];
-        current.key = key;
-        current.gen++;
+        current.gen.fetch_add(1, std::memory_order_release);    // This is important to avoid dirty read
+        std::atomic_ref<key_type> key_ref(current.key);
+        key_ref.store(key, std::memory_order_relaxed);          // Data race avoidance
 
         new (&current.value) value_type(std::forward<Args>(args)...); // Memory had been allocated by assign_slot
 
-        current.state = slot_state::Occupied;
-        current.gen++;
+        current.state.store(slot_state::Occupied, std::memory_order_relaxed);
+        current.gen.fetch_add(1, std::memory_order_release);
         _size++;
     }
 
