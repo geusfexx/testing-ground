@@ -80,3 +80,33 @@ Done: 32 threads finished.
 
        1.589052000 seconds user
        0.358096000 seconds sys
+
+
+========================================================
+SCENARIO: Readers(28) Writers(4)                        
+                   | NORMAL MODE |
+--------------------------------------------------------
+  CacheSize:         65536   KeyRange:            78643
+  Payload Size:        128   Shards amount:          32
+========================================================
+
+Testing: Sharded<Lv3_SPSCBuffer_DeferredFlatLRU>...
+Time: 285.28 s 
+Ops/sec: 112.171 M
+Avg Latency: 8.915 ns
+Misses: 18610193577
+
+Testing: Sharded<Lv4_SPSCBuffer_DeferredFlatLRU>...
+Time: 117.815 s 
+Ops/sec: 271.612 M
+Avg Latency: 3.68172 ns
+Misses: 445118555
+
+Testing: Lv2_Sharded<Lv4_SPSCBuffer_DeferredFlatLRU>...
+Time: 116.336 s 
+Ops/sec: 275.066 M
+Avg Latency: 3.63549 ns
+Misses: 549225535
+
+Done: 32 threads finished.
+
