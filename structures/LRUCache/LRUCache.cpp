@@ -1226,7 +1226,12 @@ public:
             const auto& current = _table[idx];
 
             uint32_t gen1 = current.gen.load(std::memory_order_acquire);
-            if (gen1 & 1) return {nullptr, NullIdx, 0, false};  // value isn't actual
+            if (gen1 & 1) [[unlikely]] {
+                current.gen.wait(gen1, std::memory_order_relaxed);
+                gen1 = current.gen.load(std::memory_order_acquire);
+
+                if (gen1 & 1) return {nullptr, NullIdx, 0, false};
+            }  // value isn't actual
 
             slot_state current_state = current.state.load(std::memory_order_relaxed);
             if (current_state == slot_state::Empty) return {nullptr, NullIdx, 0, false};
@@ -1266,6 +1271,7 @@ public:
 
         current.state.store(slot_state::Occupied, std::memory_order_relaxed);
         current.gen.fetch_add(1, std::memory_order_release);
+        current.gen.notify_all();
         _size++;
     }
 
@@ -1419,11 +1425,17 @@ public:
         if (res.found) {
             auto& entry = _collection.get_entry_mutable(res.idx);
 
+            if (entry.value == value) [[unlikely]] { // Cache & care
+                _collection.move_to_front(res.idx);
+                return; // Quiet update
+            }
+
             uint32_t current_gen = entry.gen.load(std::memory_order_relaxed);
             entry.gen.store(current_gen + 1, std::memory_order_release);
             *(res.ptr) = std::forward<T>(value);
 
             entry.gen.store(current_gen + 2, std::memory_order_release);
+            entry.gen.notify_all();
             _collection.move_to_front(res.idx);
         } else {
             if (_collection.size() >= Capacity) {
@@ -1442,4 +1454,60 @@ private:
 
     cacheMap            _collection;
     std::shared_mutex   _rw_mtx;
+};
+
+//  Wrapper for SharedLRU
+template <template<typename, typename, std::size_t> class CacheImpl,
+    typename KeyType, typename ValueType,
+    std::size_t TotalCapacity = 2 * 1024,
+    std::size_t ShardsCount = 16>
+requires PowerOfTwoValue<ShardsCount>
+class Lv2_ShardedCache : private NonCopyableNonMoveable {
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t ShardCapacity = TotalCapacity / ShardsCount;
+    static_assert(ShardCapacity >= 64, "Shard capacity too small!");
+    using Cache = CacheImpl<KeyType, ValueType, ShardCapacity>;
+
+public:
+    static constexpr std::string name() noexcept {
+        return "Lv2_Sharded<" + std::string(Cache::name()) + ">";
+    }
+
+    using value_type = ValueType;
+    using key_type = KeyType;
+
+private:
+    static constexpr std::size_t Mask = ShardsCount - 1;
+    static_assert(TotalCapacity > 0, "TotalCapacity must be > 0");
+    static_assert(ShardsCount > 0, "ShardsCount must be > 0");
+    static_assert(std::has_single_bit(ShardsCount), "ShardsCount must be power of 2");
+    static_assert(std::has_single_bit(alignof(Cache)), "Alignment must be power of 2");
+
+    std::size_t get_shard_idx(const KeyType& key) const noexcept {
+        return std::hash<KeyType>{}(key) & Mask;
+    }
+
+public:
+    Lv2_ShardedCache() {
+        _shards.reserve(ShardsCount);
+        for (std::size_t i = 0; i < ShardsCount; ++i) {
+            _shards.emplace_back(std::make_unique<Cache>());
+        }
+    }
+
+    std::optional<ValueType> get(const KeyType& key) noexcept {
+        return _shards[get_shard_idx(key)].cache->get(key);
+    }
+
+    template <typename T>
+    void put(const KeyType& key, T&& value) {
+        _shards[get_shard_idx(key)].cache->put(key, std::forward<T>(value));
+    }
+
+private:
+    struct alignas(CacheLine) ShardWrapper {
+        std::unique_ptr<Cache> cache;
+        explicit ShardWrapper(std::unique_ptr<Cache> c) : cache(std::move(c)) {}
+    };
+    std::vector<ShardWrapper> _shards;
 };

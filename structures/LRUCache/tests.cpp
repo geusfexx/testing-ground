@@ -89,7 +89,7 @@ void run_benchmark(const TestConfig& config) {
             int local_misses = 0;
             std::size_t offset = (i * 100) & (config.key_amount - 1); // Distribute readers across different areas
 
-            for (long long j = 0; j < 1e5; ++j) {
+            for (long long j = 0; j < 1e4; ++j) {
                 if (!cache.get(keys[(offset + j) & (config.key_amount - 1)]));
                 if constexpr (UseYield) std::this_thread::yield();
             }
@@ -108,7 +108,7 @@ void run_benchmark(const TestConfig& config) {
         threads.emplace_back([&cache, &config, &keys, &start_signal, i]() {
             typename Cache::value_type val{42};
 
-            for (long long j = 0; j < 1e5; ++j) {
+            for (long long j = 0; j < 1e4; ++j) {
                 std::size_t offset = ((config.readers + i) * 100) & (config.key_amount - 1); // Distribute writers across different areas
                 cache.put((keys[(offset + j) & (config.key_amount - 1)]), val);
                 if constexpr (UseYield) std::this_thread::yield();
@@ -124,7 +124,7 @@ void run_benchmark(const TestConfig& config) {
         });
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     start_signal.store(true, std::memory_order_release);
     auto start = std::chrono::high_resolution_clock::now();
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -167,7 +167,7 @@ std::cout << "========================================================\n"
 
 int main()
 {
-    const long long iters = 1e7;
+    const long long iters = 1e9;
     constexpr int cache_sz = 64 * 1024;
     constexpr int k_range = (cache_sz * 12) / 10;
     const int payload_size = 128;
@@ -197,7 +197,7 @@ int main()
     using S_Lv2_bdFM = ShardedCache<Lv2_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
     using S_Lv3_bdFM = ShardedCache<Lv3_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
     using S_Lv4_bdFM = ShardedCache<Lv4_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
-
+    using S2_Lv4_bdFM = Lv2_ShardedCache<Lv4_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
 //    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM>(balanced);
 //    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM>(write_heavy);
 //    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
@@ -206,7 +206,8 @@ int main()
 //    execute_scenario<false, S_Lv3_bdFM>(read_heavy);
 
 //    execute_scenario<false, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM>(read_heavy);
-    execute_scenario<false, S_Lv2_bdFM, S_Lv3_bdFM, S_Lv4_bdFM>(read_heavy);
+//    execute_scenario<false, S_Lv2_bdFM, S_Lv3_bdFM, S_Lv4_bdFM, S2_Lv4_bdFM>(read_heavy);
+    execute_scenario<false, S_Lv3_bdFM, S_Lv4_bdFM, S2_Lv4_bdFM>(read_heavy);
 
 //    execute_scenario<false, S_Slow, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
 //    execute_scenario<false, S_Slow, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
