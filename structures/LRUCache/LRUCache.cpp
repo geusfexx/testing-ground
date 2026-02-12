@@ -1414,7 +1414,7 @@ public:
 
     template <typename T>
     void put(const KeyType& key, T&& value) {
-        std::unique_lock lock(_rw_mtx);
+        std::lock_guard<std::mutex> lock(_mtx);
 
         if (_dirty_mask.load(std::memory_order_relaxed)) {
             apply_updates();
@@ -1453,7 +1453,7 @@ private:
     alignas(CacheLine) std::atomic<uint64_t>    _dirty_mask{0};
 
     cacheMap            _collection;
-    std::shared_mutex   _rw_mtx;
+    std::mutex          _mtx;
 };
 
 //  Wrapper for SharedLRU

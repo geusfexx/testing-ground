@@ -167,7 +167,7 @@ std::cout << "========================================================\n"
 
 int main()
 {
-    const long long iters = 1e9;
+    const long long iters = 1e8;
     constexpr int cache_sz = 64 * 1024;
     constexpr int k_range = (cache_sz * 12) / 10;
     const int payload_size = 128;
@@ -208,6 +208,9 @@ int main()
 //    execute_scenario<false, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM>(read_heavy);
 //    execute_scenario<false, S_Lv2_bdFM, S_Lv3_bdFM, S_Lv4_bdFM, S2_Lv4_bdFM>(read_heavy);
     execute_scenario<false, S_Lv3_bdFM, S_Lv4_bdFM, S2_Lv4_bdFM>(read_heavy);
+//    execute_scenario<false, S_Lv3_bdFM>(read_heavy);
+//    execute_scenario<false, S_Lv4_bdFM>(read_heavy);
+//    execute_scenario<false, S2_Lv4_bdFM>(read_heavy);
 
 //    execute_scenario<false, S_Slow, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
 //    execute_scenario<false, S_Slow, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
