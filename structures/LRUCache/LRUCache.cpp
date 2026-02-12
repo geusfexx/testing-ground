@@ -767,7 +767,7 @@ private:
 
 
 
-/*
+/*              Up to 16 cores
 *   TODO:   Summary       combine list logic into FlatMap as one _collection
 *   TODO:                       _collection.move_to_front(...) in LRU                                       ******      Done
 *   TODO:                       enum class SlotState : uint8_t { Empty = 0, Occupied = 1, Deleted = 2 };    ******      Done
@@ -964,7 +964,7 @@ private:
     std::size_t _size = 0;
 };
 
-
+//               Up to 16-32 cores
 template <Hashable KeyType, typename ValueType, std::size_t Capacity = 4 * 1024, std::size_t MaxThreads = 32>
 requires PowerOfTwoValue<MaxThreads>
 class Lv3_bdFlatLRU : private NonCopyableNonMoveable {
@@ -1082,7 +1082,7 @@ private:
     std::shared_mutex   _rw_mtx;
 };
 
-
+//              Up to 32 cores
 template <Hashable KeyType, typename ValueType, std::size_t Capacity = 1024>
 requires PowerOfTwoValue<Capacity>
 class Lv2_LinkedFlatMap : private NonCopyableNonMoveable { // Open Addressing table with Linear Probing
@@ -1326,7 +1326,7 @@ private:
     std::size_t _size = 0;
 };
 
-/*
+/*              Up to 32 cores
 *   TODO:   Summary       Almost wait-free Read
 *   TODO:                       uses Generation as Sequence Lock in FlatMap
 *   TODO:                       std::atomic<slot_state>
