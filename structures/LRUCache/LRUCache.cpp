@@ -1414,7 +1414,15 @@ public:
 
     template <typename T>
     void put(const KeyType& key, T&& value) {
-        std::lock_guard<std::mutex> lock(_mtx);
+
+        //CRITICAL  ****    Potential problem if user calls yield
+        //NOTE      ****    Use mutex, instead of spin
+        //std::lock_guard<std::mutex> lock(_mtx);
+        while (_spin_lock.test_and_set(std::memory_order_acquire)) {
+            __builtin_ia32_pause();
+        }
+
+        auto release_lock = [this]() { _spin_lock.clear(std::memory_order_release); };
 
         if (_dirty_mask.load(std::memory_order_relaxed)) {
             apply_updates();
@@ -1427,6 +1435,7 @@ public:
 
             if (entry.value == value) [[unlikely]] { // Cache & care
                 _collection.move_to_front(res.idx);
+                release_lock();
                 return; // Quiet update
             }
 
@@ -1446,6 +1455,8 @@ public:
             _collection.emplace_at(res.idx, key, std::forward<T>(value));
             _collection.move_to_front(res.idx);
         }
+
+        release_lock();
     }
 
 private:
@@ -1453,7 +1464,11 @@ private:
     alignas(CacheLine) std::atomic<uint64_t>    _dirty_mask{0};
 
     cacheMap            _collection;
-    std::mutex          _mtx;
+    //std::mutex          _mtx;
+
+    //CRITICAL  ****    Potential problem if user calls yield
+    //NOTE      ****    Use mutex, instead of spin
+    std::atomic_flag    _spin_lock = ATOMIC_FLAG_INIT;
 };
 
 //  Wrapper for SharedLRU

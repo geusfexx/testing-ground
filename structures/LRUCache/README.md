@@ -225,3 +225,28 @@ Done: 32 threads finished.
      475.598817000 seconds user
      158.231692000 seconds sys
 
+
+With spin_lock by std::atomic_flag
+========================================================
+SCENARIO: Readers(56) Writers(8) Iterations: 1000 M
+    
+                   | NORMAL MODE |
+--------------------------------------------------------
+  CacheSize:         32768   KeyRange:            39321
+  Payload Size:        128   Shards amount:          64
+========================================================
+
+Testing: Sharded<Lv4_SPSCBuffer_DeferredFlatLRU>...
+Time: 144.059 s 
+Ops/sec: 444.263 M
+Avg Latency: 2.25092 ns
+Misses: 269731535
+
+Testing: Lv2_Sharded<Lv4_SPSCBuffer_DeferredFlatLRU>...
+Time: 149.251 s 
+Ops/sec: 428.807 M
+Avg Latency: 2.33205 ns
+Misses: 240712712
+
+Done: 64 threads finished.
+

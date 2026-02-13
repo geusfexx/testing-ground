@@ -76,7 +76,7 @@ private:
 template<typename Cache, bool UseYield = false>
 void run_benchmark(const TestConfig& config) {
     Cache cache;
-    std::atomic<long long> total_misses{0};
+    std::atomic<unsigned long long> total_misses{0};
     std::vector<std::thread> threads;
     const auto& data = BenchmarkData<key_amount>::get(config.key_range);
     const auto& keys = data.keys;
@@ -147,7 +147,8 @@ template<bool UseYield = false, typename... Caches>
 void execute_scenario(const TestConfig& config) {
 
 std::string scenario = "SCENARIO: Readers(" + std::to_string(config.readers) +
-                       ") Writers(" + std::to_string(config.writers) + ")";
+                       ") Writers(" + std::to_string(config.writers) +
+                       ") Iterations: " + std::to_string(config.iterations / 1'000'000) + " M\n";
 std::string mode = UseYield ? "| YIELD MODE |" : "| NORMAL MODE |";
 
 std::cout << "========================================================\n"
@@ -207,7 +208,7 @@ int main()
 
 //    execute_scenario<false, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM>(read_heavy);
 //    execute_scenario<false, S_Lv2_bdFM, S_Lv3_bdFM, S_Lv4_bdFM, S2_Lv4_bdFM>(read_heavy);
-    execute_scenario<false, S_Lv3_bdFM, S_Lv4_bdFM, S2_Lv4_bdFM>(read_heavy);
+    execute_scenario<false, S_Lv4_bdFM, S2_Lv4_bdFM>(read_heavy);
 //    execute_scenario<false, S_Lv3_bdFM>(read_heavy);
 //    execute_scenario<false, S_Lv4_bdFM>(read_heavy);
 //    execute_scenario<false, S2_Lv4_bdFM>(read_heavy);
