@@ -1533,8 +1533,8 @@ private:
 
 /*              Up to 32-64 (?) cores (With NUMA penalty)
 *   TODO:   Summary       Almost wait-free Read / Cores-friendly Cache
-*   TODO:                       Split Entry to MetaEntry and DataEntry in Lv3_LinkedFlatMap (SoA)               //IDEA
-*   TODO:                       Zero-copy via shared_ptr                                                        //IDEA
+*   TODO:                       Split Entry to MetaEntry and DataEntry in Lv3_LinkedFlatMap (SoA)               Done
+*   TODO:                       Zero-copy via shared_ptr                                                        Done
 *   TODO:                       Huge Pages allocator                                                            //IDEA
 *   TODO:                       All DefferedLRU has Update Lag problem. May It'll be resolved in this iteration //IDEA who will be as housekeeper
 *                               enum class WorkerRole : uint8_t {
@@ -1867,7 +1867,7 @@ private:
         auto& buffer = _update_buffers[buf_idx];
 
         while (buffer.pop(op)) {
-            __builtin_prefetch(&collection.get_meta(collection.get_head()), 1, 3);
+            __builtin_prefetch(&_collection.get_meta(_collection.get_head()), 1, 3);
 
             if (_collection.is_valid_gen(op.idx, op.gen)) {
                 _collection.move_to_front(op.idx);
