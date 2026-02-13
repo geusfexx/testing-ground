@@ -250,3 +250,54 @@ Misses: 240712712
 
 Done: 64 threads finished.
 
+
+
+We have received contradictory results, but the work is still ongoing.
+
+========================================================
+SCENARIO: Readers(28) Writers(4) Iterations: 100 M
+     
+                   | NORMAL MODE |
+--------------------------------------------------------
+  CacheSize:         65536   KeyRange:            78643
+  Payload Size:        128   Shards amount:          32
+========================================================
+
+Testing: Lv2_Sharded<Lv4_SPSCBuffer_DeferredFlatLRU>...
+Time: 7.74366 s 
+Ops/sec: 413.241 M
+Avg Latency: 2.41989 ns
+Misses: 416277910
+
+Testing: Lv3_Sharded<Lv5_SPSCBuffer_DeferredFlatLRU>...
+Time: 16.9284 s 
+Ops/sec: 189.031 M
+Avg Latency: 5.29012 ns
+Misses: 135602169
+
+Done: 32 threads finished.
+
+
+========================================================
+SCENARIO: Readers(28) Writers(4) Iterations: 100 M
+     
+                   | NORMAL MODE |
+--------------------------------------------------------
+  CacheSize:         65536   KeyRange:            78643
+  Payload Size:      32768   Shards amount:          32
+========================================================
+
+Testing: Lv2_Sharded<Lv4_SPSCBuffer_DeferredFlatLRU>...
+Time: 7.6578 s 
+Ops/sec: 417.875 M
+Avg Latency: 2.39306 ns
+Misses: 507477499
+
+Testing: Lv3_Sharded<Lv5_SPSCBuffer_DeferredFlatLRU>...
+Time: 18.0661 s 
+Ops/sec: 177.128 M
+Avg Latency: 5.64565 ns
+Misses: 122603587
+
+Done: 32 threads finished.
+
