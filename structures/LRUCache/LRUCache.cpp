@@ -1526,3 +1526,157 @@ private:
     };
     std::vector<ShardWrapper> _shards;
 };
+
+
+
+
+
+/*              Up to 32-64 (?) cores (With NUMA penalty)
+*   TODO:   Summary       Almost wait-free Read / Cores-friendly Cache
+*   TODO:                       Split Entry to MetaEntry and DataEntry in Lv3_LinkedFlatMap (SoA)               //IDEA
+*   TODO:                       Zero-copy via shared_ptr                                                        //IDEA
+*   TODO:                       Huge Pages allocator                                                            //IDEA
+*   TODO:                       All DefferedLRU has Update Lag problem. May It'll be resolved in this iteration //IDEA who will be as housekeeper
+*                               enum class WorkerRole : uint8_t {
+*                                   Idle = 0, // Sleeps/waits for data
+*                                   Working = 1, // Performs put()
+*                                   Cleaning = 2 // Performs apply_updates()
+*                               }; //NOTE Houston, I need a dispatcher :)
+*/
+template <Hashable KeyType, typename ValueType, std::size_t Capacity = 4 * 1024, std::size_t MaxThreads = 32>
+requires PowerOfTwoValue<MaxThreads>
+class Lv5_bdFlatLRU : private NonCopyableNonMoveable {
+public:
+    static constexpr const char* name() noexcept { return "Lv5_SPSCBuffer_DeferredFlatLRU"; }
+    using value_type = ValueType;
+    using key_type = KeyType;
+
+private:
+    using cacheMap = Lv2_LinkedFlatMap<KeyType, ValueType, Capacity>;
+
+    struct UpdateOp {
+        cacheMap::index_type    idx;
+        uint32_t                gen;
+    };
+
+    using SPSCBuffer = SPSC_RingBufferUltraFast<UpdateOp, Capacity / (4 * MaxThreads)>;
+
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
+
+private:
+    struct alignas(CacheLine) PaddedSPSC : public SPSCBuffer {
+        char padding[CacheLine - (sizeof(SPSCBuffer) & (CacheLine - 1))];
+    };
+
+private:
+
+    static std::size_t get_thread_id() {
+        static std::atomic<std::size_t> counter{0};
+
+        // rollcall
+        thread_local std::size_t id = std::numeric_limits<std::size_t>::max();
+
+        if (id == std::numeric_limits<std::size_t>::max()) [[unlikely]] {
+            id = counter.fetch_add(1, std::memory_order_relaxed) & (MaxThreads - 1);
+        }
+
+        return id;
+    }
+
+    void apply_updates() {
+        uint64_t mask = _dirty_mask.exchange(0, std::memory_order_acquire);
+        if (mask == 0) return;
+
+        // Iterate only for set bits
+        while (mask > 0) {
+            int buf_idx = std::countr_zero(mask); // Index by set bit
+            UpdateOp op;
+
+            while (_update_buffers[buf_idx].pop(op)) {
+            __builtin_prefetch(&_collection.get_entry(_collection.get_head()), 1, 3);
+                if (_collection.is_valid_gen(op.idx, op.gen)) {
+//                    __builtin_prefetch(&_collection.get_entry(_collection.get_head()), 1, 3);
+                    _collection.move_to_front(op.idx);
+                }
+            }
+
+            mask &= (mask - 1); // Next bit
+        }
+    }
+
+public:
+    std::optional<ValueType> get(const KeyType& key) noexcept {
+        auto res = _collection.lookup(key);
+        if (!res.found) [[unlikely]] return {};
+
+        __builtin_prefetch(res.ptr, 0, 3);
+
+        auto tid = get_thread_id();
+        if (_update_buffers[tid].push({res.idx, res.gen})) [[likely]] {
+            if (!(_dirty_mask.load(std::memory_order_relaxed) & (1ULL << tid))) {   // Test
+                _dirty_mask.fetch_or(1ULL << tid, std::memory_order_release);       // Test & Set bit in mask
+            }
+        }
+
+        return *(res.ptr);
+    }
+
+    template <typename T>
+    void put(const KeyType& key, T&& value) {
+
+        //CRITICAL  ****    Potential problem if user calls yield
+        //NOTE      ****    Use mutex, instead of spin
+        //std::lock_guard<std::mutex> lock(_mtx);
+        while (_spin_lock.test_and_set(std::memory_order_acquire)) {
+            __builtin_ia32_pause();
+        }
+
+        auto release_lock = [this]() { _spin_lock.clear(std::memory_order_release); };
+
+        if (_dirty_mask.load(std::memory_order_relaxed)) {
+            apply_updates();
+        }
+
+        auto res = _collection.lookup(key);
+
+        if (res.found) {
+            auto& entry = _collection.get_entry_mutable(res.idx);
+
+            if (entry.value == value) [[unlikely]] { // Cache & care
+                _collection.move_to_front(res.idx);
+                release_lock();
+                return; // Quiet update
+            }
+
+            uint32_t current_gen = entry.gen.load(std::memory_order_relaxed);
+            entry.gen.store(current_gen + 1, std::memory_order_release);
+            *(res.ptr) = std::forward<T>(value);
+
+            entry.gen.store(current_gen + 2, std::memory_order_release);
+            entry.gen.notify_all();
+            _collection.move_to_front(res.idx);
+        } else {
+            if (_collection.size() >= Capacity) {
+                _collection.erase_index(_collection.get_tail());
+                res.idx = _collection.assign_slot(key);
+            }
+
+            _collection.emplace_at(res.idx, key, std::forward<T>(value));
+            _collection.move_to_front(res.idx);
+        }
+
+        release_lock();
+    }
+
+private:
+    alignas(CacheLine) PaddedSPSC               _update_buffers[MaxThreads];
+    alignas(CacheLine) std::atomic<uint64_t>    _dirty_mask{0};
+
+    cacheMap            _collection;
+    //std::mutex          _mtx;
+
+    //CRITICAL  ****    Potential problem if user calls yield
+    //NOTE      ****    Use mutex, instead of spin
+    std::atomic_flag    _spin_lock = ATOMIC_FLAG_INIT;
+};
