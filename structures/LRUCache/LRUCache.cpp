@@ -1813,9 +1813,57 @@ private:
     std::size_t _size = 0;
 };
 
+template <typename Derived, std::size_t MaxThreads>
+class EpochManager {
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+
+    struct ThreadState {
+        alignas(64) std::atomic<uint64_t> active_epoch{0};
+    };
+
+public:
+    struct [[nodiscard]] Guard {
+        EpochManager*   owner;
+        std::size_t     tid;
+        ~Guard() { owner->leave_epoch(tid); }
+    };
+
+    uint64_t current_epoch() const noexcept {
+        return _global_epoch.load(std::memory_order_relaxed);
+    }
+
+    Guard enter_epoch(std::size_t tid) noexcept {
+        _thread_states[tid].active_epoch.store(_global_epoch.load(std::memory_order_relaxed), std::memory_order_release);
+        return {this, tid};
+    }
+
+    void leave_epoch(std::size_t tid) noexcept {
+        _thread_states[tid].active_epoch.store(0, std::memory_order_release);
+    }
+
+    uint64_t bump_epoch() noexcept {
+        return _global_epoch.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    uint64_t get_min_active() const noexcept {
+        uint64_t current = _global_epoch.load(std::memory_order_acquire);
+        uint64_t min_e = current;
+        for (const auto& ts : _thread_states) {
+            uint64_t e = ts.active_epoch.load(std::memory_order_acquire);
+            if (e != 0 && e < min_e) min_e = e;
+        }
+        return min_e;
+    }
+
+private:
+    std::array<ThreadState, MaxThreads> _thread_states{};
+    std::atomic<uint64_t>               _global_epoch{1};
+};
+
 template <Hashable KeyType, typename ValueType, std::size_t Capacity = 4 * 1024, std::size_t MaxThreads = 32>
 requires PowerOfTwoValue<MaxThreads>
-class Lv5_bdFlatLRU : private NonCopyableNonMoveable {
+class Lv5_bdFlatLRU :   public EpochManager<Lv5_bdFlatLRU<KeyType, ValueType, Capacity, MaxThreads>, MaxThreads>,
+                        private NonCopyableNonMoveable {
 public:
     static constexpr const char* name() noexcept { return "Lv5_SPSCBuffer_DeferredFlatLRU"; }
     using value_type = ValueType;
@@ -1823,20 +1871,26 @@ public:
 
 private:
     using cacheMap = Lv3_LinkedFlatMap<KeyType, ValueType, Capacity>;
+    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
 
-    struct UpdateOp {
+    struct alignas(CacheLine) UpdateOp {
         cacheMap::index_type    idx;
         uint32_t                gen;
     };
 
     using SPSCBuffer = SPSC_RingBufferUltraFast<UpdateOp, Capacity / (4 * MaxThreads)>;
+    using BaseEpochManager = EpochManager<Lv5_bdFlatLRU<KeyType, ValueType, Capacity, MaxThreads>, MaxThreads>;
 
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
     static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
 
 private:
     struct alignas(CacheLine) PaddedSPSC : public SPSCBuffer {
         char padding[CacheLine - (sizeof(SPSCBuffer) & (CacheLine - 1))];
+    };
+
+    struct RetiredObject {
+        std::shared_ptr<ValueType> ptr;
+        uint64_t epoch;
     };
 
 private:
@@ -1881,6 +1935,10 @@ private:
         for_each_bit(mask, [this](int buf_idx) {
             process_buffer(buf_idx);
         });
+
+        if (!_retired_list.empty()) [[likely]] {
+            this->cleanup_retired();
+        }
     }
 
     void mark_access(cacheMap::index_type idx, uint32_t gen) noexcept {
@@ -1896,9 +1954,19 @@ private:
         }
     }
 
+    void cleanup_retired() {
+        uint64_t min_e = this->get_min_active();
+        std::erase_if(_retired_list, [min_e](auto& obj) {
+            return obj.epoch < min_e;
+        });
+    }
+
 public:
 
     std::shared_ptr<ValueType> get(const KeyType& key) noexcept {
+        const auto tid = get_thread_id();
+        auto guard = this->enter_epoch(tid);
+
         // shared_ptr copied
         auto res = _collection.lookup(key); //NOTE it needs to prove
         if (!res.ptr) [[unlikely]] return nullptr;
@@ -1918,7 +1986,7 @@ public:
         while (_spin_lock.test_and_set(std::memory_order_acquire)) {
             __builtin_ia32_pause();
         }
-
+        BaseEpochManager::bump_epoch();
         auto release_lock = [this]() { _spin_lock.clear(std::memory_order_release); };
 
         if (_dirty_mask.load(std::memory_order_relaxed)) {
@@ -1942,7 +2010,9 @@ public:
             uint32_t current_gen = meta.gen.load(std::memory_order_relaxed);
             meta.gen.store(current_gen + 1, std::memory_order_release);
 
+            auto old_ptr = std::move(data.value);
             data.value = std::make_shared<ValueType>(std::forward<T>(value));
+            _retired_list.push_back({std::move(old_ptr), BaseEpochManager::current_epoch()});
 
             meta.gen.store(current_gen + 2, std::memory_order_release);
             meta.gen.notify_all();
@@ -1950,12 +2020,20 @@ public:
         } else {
             // Insert
             if (_collection.size() >= Capacity) {
-                _collection.erase_index(_collection.get_tail());
+                auto tail_idx = _collection.get_tail();
+                auto evicted_ptr = _collection.get_data(tail_idx).value;
+                _retired_list.push_back({std::move(evicted_ptr), BaseEpochManager::current_epoch()});
+
+                _collection.erase_index(tail_idx);
                 res.idx = _collection.assign_slot(key);
             }
 
             _collection.emplace_at(res.idx, key, std::forward<T>(value));
             _collection.move_to_front(res.idx);
+        }
+
+        if (_retired_list.size() >= 64) {
+            this->cleanup_retired();
         }
 
         release_lock();
@@ -1964,6 +2042,7 @@ public:
 private:
     alignas(CacheLine) PaddedSPSC               _update_buffers[MaxThreads];
     alignas(CacheLine) std::atomic<uint64_t>    _dirty_mask{0};
+    std::vector<RetiredObject> _retired_list;
 
     cacheMap            _collection;
     //std::mutex          _mtx;

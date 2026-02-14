@@ -185,7 +185,7 @@ int main()
 {
     const long long iters = 1e7;
     constexpr int cache_sz = 64 * 1024;
-    constexpr int k_range = cache_sz * 108 / 100;
+    constexpr int k_range = cache_sz * 120 / 100;
     const int payload_size = 32 * 1024;
     const int shards_amount = 32;
 
@@ -220,7 +220,7 @@ int main()
 //    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM, Lv5_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(write_heavy);
 //    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM, Lv5_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(read_heavy);
 
-    execute_scenario<false, S_Lv3_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(read_heavy);
+    execute_scenario<false, /*S_Lv3_bdFM,*/ S2_Lv4_bdFM, S3_Lv5_bdFM>(read_heavy);
 
 /*
     execute_scenario<true, Slow, Spin, Def, DefFM, Lv1_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM>(balanced);
