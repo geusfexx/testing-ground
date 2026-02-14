@@ -19,7 +19,7 @@ struct TestConfig {
     int shards_amount = 32;
 };
 
-constexpr int key_amount = 100'000;
+constexpr int key_amount = 10'000'000;
 
 template<std::size_t Size>
 struct alignas(64) Payload {
@@ -73,6 +73,18 @@ private:
     }
 };
 
+std::string format_large_num(double num) {
+    const char* units[] = {"", " k", " M", " B", " T"};
+    int unit_idx = 0;
+    while (std::abs(num) >= 1000.0 && unit_idx < 4) {
+        num /= 1000.0;
+        unit_idx++;
+    }
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(3) << num << units[unit_idx];
+    return ss.str();
+}
+
 template<typename Cache, bool UseYield = false>
 void run_benchmark(const TestConfig& config) {
     Cache cache;
@@ -84,15 +96,17 @@ void run_benchmark(const TestConfig& config) {
     std::cout << "Testing: " << Cache::name() << (UseYield ? " (with yield)" : "") << "..." << std::endl;
     std::atomic<bool> start_signal{false};
 
+    { // Warming up Cache
+        typename Cache::value_type val{42};
+        for (int i = 0; i <= config.key_range; ++i) {
+            cache.put(i, val);
+        }
+    }
+
     for (int i = 0; i < config.readers; ++i) {
         threads.emplace_back([&cache, &config, &total_misses, &keys, &start_signal, i]() {
-            int local_misses = 0;
+            unsigned long long local_misses = 0;
             std::size_t offset = (i * 100) & (config.key_amount - 1); // Distribute readers across different areas
-
-            for (long long j = 0; j < 1e4; ++j) {
-                auto res = cache.get(keys[(offset + j) & (config.key_amount - 1)]);
-                if constexpr (UseYield) std::this_thread::yield();
-            }
 
             while(!start_signal.load(std::memory_order_acquire));
 
@@ -111,12 +125,6 @@ void run_benchmark(const TestConfig& config) {
         threads.emplace_back([&cache, &config, &keys, &start_signal, i]() {
             typename Cache::value_type val{42};
 
-            for (long long j = 0; j < 1e4; ++j) {
-                std::size_t offset = ((config.readers + i) * 100) & (config.key_amount - 1); // Distribute writers across different areas
-                cache.put((keys[(offset + j) & (config.key_amount - 1)]), val);
-                if constexpr (UseYield) std::this_thread::yield();
-            }
-
             while(!start_signal.load(std::memory_order_acquire));
 
             for (long long j = 0; j < config.iterations; ++j) {
@@ -127,7 +135,7 @@ void run_benchmark(const TestConfig& config) {
         });
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
+//    std::this_thread::sleep_for(std::chrono::milliseconds(1200));
     start_signal.store(true, std::memory_order_release);
     auto start = std::chrono::high_resolution_clock::now();
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -138,12 +146,16 @@ void run_benchmark(const TestConfig& config) {
     std::chrono::duration<double> diff = end - start;
 
     double total_ops = (config.readers + config.writers) * config.iterations;
+    double total_reads = (double)config.readers * config.iterations;
+    double throughput = total_ops / diff.count();
     double avg_latency_ns = (diff.count() / total_ops) * 1e9;
+    double miss_rate = (total_misses.load() / total_reads) * 100.0;
 
-    std::cout << "Time: " << diff.count() << " s \n"
-              << "Ops/sec: " << (total_ops / diff.count()) / 1e6 << " M\n"
-              << "Avg Latency: " << avg_latency_ns << " ns\n"
-              << "Misses: " << total_misses << "\n\n";
+    std::cout << "Time: "           << diff.count() << " s \n"
+              << "Ops/sec: "        << format_large_num(throughput) << "\n"
+              << "Avg Latency: "    << avg_latency_ns << " ns\n"
+              << "Misses: "         << format_large_num(total_misses.load())
+              << " (" << std::fixed << std::setprecision(2) << miss_rate << "%)\n\n";
 }
 
 template<bool UseYield = false, typename... Caches>
@@ -171,9 +183,9 @@ std::cout << "========================================================\n"
 
 int main()
 {
-    const long long iters = 1e8;
+    const long long iters = 1e7;
     constexpr int cache_sz = 64 * 1024;
-    constexpr int k_range = (cache_sz * 12) / 10;
+    constexpr int k_range = cache_sz * 108 / 100;
     const int payload_size = 32 * 1024;
     const int shards_amount = 32;
 
@@ -192,6 +204,7 @@ int main()
     using Lv2_bdFM = Lv2_bdFlatLRU<int, DataType, cache_sz>;
     using Lv3_bdFM = Lv3_bdFlatLRU<int, DataType, cache_sz>;
     using Lv4_bdFM = Lv4_bdFlatLRU<int, DataType, cache_sz>;
+    using Lv5_bdFM = Lv5_bdFlatLRU<int, DataType, cache_sz>;
 
     using S_Slow = ShardedCache<StrictLRU, int, DataType, cache_sz, shards_amount>;
     using S_Spin = ShardedCache<SpinlockedLRU, int, DataType, cache_sz, shards_amount>;
@@ -203,23 +216,12 @@ int main()
     using S_Lv4_bdFM = ShardedCache<Lv4_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
     using S2_Lv4_bdFM = Lv2_ShardedCache<Lv4_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
     using S3_Lv5_bdFM = Lv3_ShardedCache<Lv5_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
-//    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM>(balanced);
-//    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM>(write_heavy);
-//    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
+//    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM, Lv5_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(balanced);
+//    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM, Lv5_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(write_heavy);
+//    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM, Lv5_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(read_heavy);
 
-//    execute_scenario<false, S_Lv2_bdFM>(read_heavy);
-//    execute_scenario<false, S_Lv3_bdFM>(read_heavy);
+    execute_scenario<false, S_Lv3_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(read_heavy);
 
-//    execute_scenario<false, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM>(read_heavy);
-//    execute_scenario<false, S_Lv2_bdFM, S_Lv3_bdFM, S_Lv4_bdFM, S2_Lv4_bdFM>(read_heavy);
-//    execute_scenario<false, S_Lv4_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(read_heavy);
-    execute_scenario<false, S2_Lv4_bdFM, S3_Lv5_bdFM>(read_heavy);
-//    execute_scenario<false, S_Lv3_bdFM>(read_heavy);
-//    execute_scenario<false, S_Lv4_bdFM>(read_heavy);
-//    execute_scenario<false, S2_Lv4_bdFM>(read_heavy);
-
-//    execute_scenario<false, S_Slow, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
-//    execute_scenario<false, S_Slow, S_Lv2_bdFM, S_Lv3_bdFM>(read_heavy);
 /*
     execute_scenario<true, Slow, Spin, Def, DefFM, Lv1_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM>(balanced);
     execute_scenario<true, Slow, Spin, Def, DefFM, Lv1_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM>(write_heavy);
