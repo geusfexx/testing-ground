@@ -1757,23 +1757,6 @@ private:
         meta.prev = NullIdx;
     }
 
-    value_ptr update_slot(index_type idx, value_ptr&& new_val) noexcept {
-        auto& meta = _meta_table[idx];
-        auto& data = _data_table[idx];
-
-        uint32_t current_gen = meta.gen.load(std::memory_order_relaxed);
-        meta.gen.store(current_gen + 1, std::memory_order_release); // lock by odd gen
-
-        value_ptr old_ptr = std::move(data.value);
-        data.value = std::move(new_val);
-
-        meta.state.store(slot_state::Occupied, std::memory_order_release);
-        meta.gen.store(current_gen + 2, std::memory_order_release);
-        meta.gen.notify_all();
-        
-        return old_ptr;
-    }
-
     void push_front(index_type idx) noexcept {
         auto& meta = _meta_table[idx];
         const index_type old_head = _head;
@@ -1790,6 +1773,23 @@ private:
 public:
 
     Lv3_LinkedFlatMap() noexcept = default;
+
+    value_ptr update_slot(index_type idx, value_ptr&& new_val) noexcept {
+        auto& meta = _meta_table[idx];
+        auto& data = _data_table[idx];
+
+        uint32_t current_gen = meta.gen.load(std::memory_order_relaxed);
+        meta.gen.store(current_gen + 1, std::memory_order_release); // lock by odd gen
+
+        value_ptr old_ptr = std::move(data.value);
+        data.value = std::move(new_val);
+
+        meta.state.store(slot_state::Occupied, std::memory_order_release);
+        meta.gen.store(current_gen + 2, std::memory_order_release);
+        meta.gen.notify_all();
+
+        return old_ptr;
+    }
 
     bool is_occupied(index_type idx) const noexcept {
         return _meta_table[idx].state == slot_state::Occupied;
