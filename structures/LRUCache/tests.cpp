@@ -183,9 +183,9 @@ std::cout << "========================================================\n"
 
 int main()
 {
-    const long long iters = 1e7;
-    constexpr int cache_sz = 64 * 1024;
-    constexpr int k_range = cache_sz * 120 / 100;
+    const long long iters = 1e8;
+    constexpr int cache_sz = 128 * 1024;
+    constexpr int k_range = cache_sz * 108 / 100;
     const int payload_size = 32 * 1024;
     const int shards_amount = 32;
 

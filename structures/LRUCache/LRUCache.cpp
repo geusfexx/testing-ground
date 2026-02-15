@@ -7,6 +7,7 @@
 #include <cassert>
 #include <bit>
 #include <concepts>
+#include <sys/mman.h>
 #include <cstddef>
 
 template <auto Num>
@@ -17,6 +18,55 @@ concept Hashable = requires(T a) {
     { std::hash<T>{}(a) } -> std::convertible_to<std::size_t>;
 };
 
+namespace sizes { // It needs to be in Units.h
+    static inline constexpr size_t KiB = 1024;
+    static inline constexpr size_t MiB = KiB * 1024;
+    static inline constexpr size_t GiB = MiB * 1024;
+    static inline constexpr size_t TiB = GiB * 1024;
+
+// Use --param hardware_destructive_interference_size=64
+#ifdef __cpp_lib_hardware_interference_size
+//    static inline constexpr size_t CacheLine = std::hardware_destructive_interference_size;
+    static inline constexpr size_t CacheLine = 64;
+#else
+    static inline constexpr size_t CacheLine = 64;
+#endif
+
+    template<typename T>
+    concept Alignable = std::integral<T> || std::is_pointer_v<T>;
+
+    constexpr uintptr_t to_uint(Alignable auto value) noexcept {
+        if constexpr (std::is_pointer_v<decltype(value)>) {
+            return reinterpret_cast<uintptr_t>(value);
+        } else {
+            return static_cast<uintptr_t>(value);
+        }
+    }
+
+    // DOWN aligninh. Powers of two only.
+    template<size_t ALIGN = CacheLine, Alignable T>
+    requires PowerOfTwoValue<ALIGN>
+    constexpr T align_down(T value) noexcept {
+        uintptr_t res = to_uint(value) & ~(static_cast<uintptr_t>(ALIGN) - 1);
+        if constexpr (std::is_pointer_v<T>) return reinterpret_cast<T>(res);
+        else return static_cast<T>(res);
+    }
+
+    // UP aligninh. Powers of two only.
+    template<size_t ALIGN = CacheLine, Alignable T>
+    requires PowerOfTwoValue<ALIGN>
+    constexpr T align_up(T value) noexcept {
+        constexpr uintptr_t mask = static_cast<uintptr_t>(ALIGN) - 1;
+        uintptr_t res = (to_uint(value) + mask) & ~mask;
+        if constexpr (std::is_pointer_v<T>) return reinterpret_cast<T>(res);
+        else return static_cast<T>(res);
+    }
+
+    // prefetch wrapper
+    inline void prefetch(const void* addr, int rw = 0, int locality = 3) noexcept {
+        __builtin_prefetch(align_down(addr), rw, locality);
+    }
+}
 
 class NonCopyableNonMoveable {
 public:
@@ -160,7 +210,7 @@ public:
     using value_type = ValueType;
 
 private:
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
     static constexpr std::size_t Mask = Capacity - 1;
     static_assert(std::has_single_bit(Capacity), "Capacity must be power of 2");
 
@@ -509,7 +559,7 @@ template <typename ValueType, std::size_t Capacity>
 requires PowerOfTwoValue<Capacity>
 class SPSC_RingBufferUltraFast {
 
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
     static_assert(std::has_single_bit(Capacity), "ShardsCount must be power of 2");
     std::size_t increment(std::size_t i) const noexcept {
         return (i + 1) & (Capacity - 1);
@@ -578,7 +628,7 @@ private:
     using cacheMap = LinearFlatMap<KeyType, typename cacheList::iterator, Capacity>;
     using SPSCBuffer = SPSC_RingBufferUltraFast<KeyType, Capacity / (4 * MaxThreads)>;
 
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
     static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
 
 private:
@@ -670,7 +720,7 @@ private:
     using cacheMap = LinearFlatMap<KeyType, typename cacheList::iterator, Capacity>;
     using SPSCBuffer = SPSC_RingBufferUltraFast<KeyType, Capacity / (4 * MaxThreads)>;
 
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
     static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
 
 private:
@@ -783,7 +833,7 @@ class LinkedFlatMap : private NonCopyableNonMoveable { // Open Addressing table 
 public:
     using index_type = std::conditional_t<(Capacity <= 65535), uint16_t, uint32_t>;
     static constexpr index_type NullIdx = std::numeric_limits<index_type>::max();
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
 
     enum class slot_state : uint8_t { Empty = 0, Occupied = 1, Deleted = 2 };
 
@@ -983,7 +1033,7 @@ private:
 
     using SPSCBuffer = SPSC_RingBufferUltraFast<UpdateOp, Capacity / (4 * MaxThreads)>;
 
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
     static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
 
 private:
@@ -1089,7 +1139,7 @@ class Lv2_LinkedFlatMap : private NonCopyableNonMoveable { // Open Addressing ta
 public:
     using index_type = std::conditional_t<(Capacity <= 65535), uint16_t, uint32_t>;
     static constexpr index_type NullIdx = std::numeric_limits<index_type>::max();
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
 
     enum class slot_state : uint8_t { Empty = 0, Occupied = 1, Deleted = 2 };
 
@@ -1218,7 +1268,7 @@ public:
         assert(false && "LinkedFlatMap table size overflow or corrupted logic");
         __builtin_unreachable(); // I'm sure
     }
-
+/*
     LookupResult get_lockless(const KeyType& key) const noexcept {
         std::size_t idx = calculate_hash_idx(key);
 
@@ -1231,7 +1281,7 @@ public:
                 gen1 = current.gen.load(std::memory_order_acquire);
 
                 if (gen1 & 1) return {nullptr, NullIdx, 0, false};
-            }  // value isn't actual
+            } // value isn't actual
 
             slot_state current_state = current.state.load(std::memory_order_relaxed);
             if (current_state == slot_state::Empty) return {nullptr, NullIdx, 0, false};
@@ -1256,7 +1306,7 @@ public:
 
         return {nullptr, NullIdx, 0, false};;
     }
-
+*/
     template <typename... Args>
     void emplace_at(index_type idx, const key_type& key, Args&&... args) noexcept {
     static_assert(std::is_nothrow_constructible_v<ValueType, Args...>,
@@ -1351,7 +1401,7 @@ private:
 
     using SPSCBuffer = SPSC_RingBufferUltraFast<UpdateOp, Capacity / (4 * MaxThreads)>;
 
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
     static_assert(std::has_single_bit(MaxThreads), "MaxThreads must be a power of 2!");
 
 private:
@@ -1478,7 +1528,7 @@ template <template<typename, typename, std::size_t> class CacheImpl,
     std::size_t ShardsCount = 16>
 requires PowerOfTwoValue<ShardsCount>
 class Lv2_ShardedCache : private NonCopyableNonMoveable {
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
     static constexpr std::size_t ShardCapacity = TotalCapacity / ShardsCount;
     static_assert(ShardCapacity >= 64, "Shard capacity too small!");
     using Cache = CacheImpl<KeyType, ValueType, ShardCapacity>;
@@ -1535,7 +1585,7 @@ private:
 *   TODO:   Summary       Almost wait-free Read / Cores-friendly Cache
 *   TODO:                       Split Entry to MetaEntry and DataEntry in Lv3_LinkedFlatMap (SoA)               Done
 *   TODO:                       Zero-copy via shared_ptr                                                        Done
-*   TODO:                       Huge Pages allocator                                                            //IDEA
+*   TODO:                       Huge Pages allocator                                                            Done
 *   TODO:                       All DefferedLRU has Update Lag problem. May It'll be resolved in this iteration //IDEA who will be as housekeeper
 *                               enum class WorkerRole : uint8_t {
 *                                   Idle = 0, // Sleeps/waits for data
@@ -1546,13 +1596,84 @@ private:
 
 
 //              Up to 32 cores
-template <Hashable KeyType, typename ValueType, std::size_t Capacity = 1024>
+
+
+template <typename T>
+struct HugePagesAllocator {
+
+    using value_type = T;
+    static inline constexpr size_t PageSize = 2 * sizes::MiB;
+
+    HugePagesAllocator() noexcept = default;
+
+    template <typename U>
+    HugePagesAllocator(const HugePagesAllocator<U>&) noexcept {}
+
+    T* allocate(std::size_t n) {
+        if (n == 0) return nullptr;
+        if (n > std::numeric_limits<std::size_t>::max() / sizeof(T))
+            throw std::bad_alloc();
+
+        std::size_t size = sizes::align_up<PageSize>(n * sizeof(T));
+
+        void* ptr = mmap(nullptr, size,
+                         PROT_READ | PROT_WRITE,
+                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
+                         -1, 0);
+
+        if (ptr == MAP_FAILED) { //FIXME
+            throw std::bad_alloc();
+        }
+
+        return static_cast<T*>(ptr);
+    }
+
+    void deallocate(T* p, std::size_t n) noexcept {
+        if (!p) return;
+        std::size_t size = sizes::align_up<PageSize>(n * sizeof(T));
+        munmap(p, size);
+    }
+
+    friend bool operator==(const HugePagesAllocator&, const HugePagesAllocator&) = default;
+};
+
+template <typename T, typename Alloc = HugePagesAllocator<T>>
+class FlatStorage {
+    T* _data;
+    std::size_t _n;
+    [[no_unique_address]] Alloc _alloc;
+
+public:
+    explicit FlatStorage(std::size_t n) : _n(n) {
+        _data = _alloc.allocate(_n);
+
+        for (std::size_t i = 0; i < _n; ++i) {
+            std::construct_at(&_data[i]);
+        }
+    }
+
+    ~FlatStorage() {
+        std::destroy_n(_data, _n);
+        _alloc.deallocate(_data, _n);
+    }
+
+    T& operator[](std::size_t i) { return _data[i]; }
+    const T& operator[](std::size_t i) const noexcept { return _data[i]; }
+    std::size_t size() const noexcept { return _n; }
+
+    void prefetch(std::size_t i) const noexcept {
+        sizes::prefetch(&_data[i]);
+    }
+};
+
+
+template <Hashable KeyType, typename ValueType, std::size_t Capacity = 1024, typename Alloc = HugePagesAllocator<char>>
 requires PowerOfTwoValue<Capacity>
 class Lv3_LinkedFlatMap : private NonCopyableNonMoveable { // Open Addressing table with Linear Probing
 public:
     using index_type = std::conditional_t<(Capacity <= 65535), uint16_t, uint32_t>;
     static constexpr index_type NullIdx = std::numeric_limits<index_type>::max();
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
 
     enum class slot_state : uint8_t { Empty = 0, Occupied = 1, Deleted = 2 };
 
@@ -1581,9 +1702,6 @@ private:
         value_ptr value;                                    // sizeof(value_type)
     };
 
-/*    static_assert(sizeof(Entry) < 64 xor (sizeof(Entry) & (CacheLine - 1)) == 0,
-        "Entry crosses cache line boundary unoptimally!");
-*/
 public:
     const MetaEntry& get_meta(index_type idx) const noexcept {
         return _meta_table[idx];
@@ -1606,7 +1724,8 @@ private:
     static constexpr std::size_t TableSize = Capacity * 2; // Load factor 0.5
     static_assert(TableSize == Capacity * 2, "Load factor must be 0.5");
     static constexpr std::size_t Mask = TableSize - 1;
-
+    using MetaAlloc = typename std::allocator_traits<Alloc>::template rebind_alloc<MetaEntry>;
+    using DataAlloc = typename std::allocator_traits<Alloc>::template rebind_alloc<DataEntry>;
 private:
 
     struct LookupResult {
@@ -1638,6 +1757,23 @@ private:
         meta.prev = NullIdx;
     }
 
+    value_ptr update_slot(index_type idx, value_ptr&& new_val) noexcept {
+        auto& meta = _meta_table[idx];
+        auto& data = _data_table[idx];
+
+        uint32_t current_gen = meta.gen.load(std::memory_order_relaxed);
+        meta.gen.store(current_gen + 1, std::memory_order_release); // lock by odd gen
+
+        value_ptr old_ptr = std::move(data.value);
+        data.value = std::move(new_val);
+
+        meta.state.store(slot_state::Occupied, std::memory_order_release);
+        meta.gen.store(current_gen + 2, std::memory_order_release);
+        meta.gen.notify_all();
+        
+        return old_ptr;
+    }
+
     void push_front(index_type idx) noexcept {
         auto& meta = _meta_table[idx];
         const index_type old_head = _head;
@@ -1652,8 +1788,8 @@ private:
     }
 
 public:
-    Lv3_LinkedFlatMap() noexcept :  _meta_table(std::make_unique<MetaEntry[]>(TableSize)),
-                                    _data_table(std::make_unique<DataEntry[]>(TableSize)) {}
+
+    Lv3_LinkedFlatMap() noexcept = default;
 
     bool is_occupied(index_type idx) const noexcept {
         return _meta_table[idx].state == slot_state::Occupied;
@@ -1667,9 +1803,13 @@ public:
     index_type get_tail() const noexcept { return _tail; }
     index_type get_head() const noexcept { return _head; }
 
+    // Uses by writer (under lock)
+    // Fast lookup: returns index and gen without copying shared_ptr
     LookupResult lookup(const KeyType& key) const noexcept {
         std::size_t idx = calculate_hash_idx(key);
         index_type first_del = NullIdx;
+
+        _meta_table.prefetch(idx);
 
         while (true) {
             const auto& meta = _meta_table[idx];
@@ -1691,6 +1831,9 @@ public:
             }
 
             idx = next_slot(idx);
+            if constexpr (TableSize > 16) {
+                _meta_table.prefetch((idx + 2) & Mask);
+            }
         }
 
         // It can loop for eternity only if Load Factor > 1.0 (all slots are Occupied or Deleted)
@@ -1699,6 +1842,7 @@ public:
         __builtin_unreachable(); // I'm sure
     }
 
+    // Uses by reader (lockless)
     LookupResult get_lockless(const KeyType& key) const noexcept {
         std::size_t idx = calculate_hash_idx(key);
 
@@ -1781,8 +1925,8 @@ public:
         const index_type n = _meta_table[idx].next;
         const index_type p = _meta_table[idx].prev;
 
-        if (n != NullIdx) __builtin_prefetch(&_meta_table[n], 1, 3);
-        if (p != NullIdx) __builtin_prefetch(&_meta_table[p], 1, 3);
+        if (n != NullIdx) sizes::prefetch(&_meta_table[n], 1);
+        if (p != NullIdx) sizes::prefetch(&_meta_table[p], 1);
 
         detach(idx);
         push_front(idx);
@@ -1806,8 +1950,8 @@ public:
     }
 
 private:
-    std::unique_ptr<MetaEntry[]> _meta_table;
-    std::unique_ptr<DataEntry[]> _data_table;
+    FlatStorage<MetaEntry, MetaAlloc> _meta_table{TableSize};
+    FlatStorage<DataEntry, DataAlloc> _data_table{TableSize};
     index_type _head = NullIdx;
     index_type _tail = NullIdx;
     std::size_t _size = 0;
@@ -1815,7 +1959,7 @@ private:
 
 template <typename Derived, std::size_t MaxThreads>
 class EpochManager {
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
 
     struct ThreadState {
         alignas(64) std::atomic<uint64_t> active_epoch{0};
@@ -1871,7 +2015,7 @@ public:
 
 private:
     using cacheMap = Lv3_LinkedFlatMap<KeyType, ValueType, Capacity>;
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
 
     struct alignas(CacheLine) UpdateOp {
         cacheMap::index_type    idx;
@@ -1921,7 +2065,7 @@ private:
         auto& buffer = _update_buffers[buf_idx];
 
         while (buffer.pop(op)) {
-            __builtin_prefetch(&_collection.get_meta(_collection.get_head()), 1, 3);
+            sizes::prefetch(&_collection.get_meta(_collection.get_head()), 1);
 
             if (_collection.is_valid_gen(op.idx, op.gen)) {
                 _collection.move_to_front(op.idx);
@@ -1968,11 +2112,11 @@ public:
         auto guard = this->enter_epoch(tid);
 
         // shared_ptr copied
-        auto res = _collection.lookup(key); //NOTE it needs to prove
+        auto res = _collection.get_lockless(key); //NOTE it needs to prove
         if (!res.ptr) [[unlikely]] return nullptr;
 
         mark_access(res.idx, res.gen);
-        __builtin_prefetch(res.ptr.get(), 0, 3);
+        sizes::prefetch(res.ptr.get(), 0);
 
         return std::move(res.ptr);
     }
@@ -1996,26 +2140,15 @@ public:
         auto res = _collection.lookup(key);
 
         if (res.ptr) {
-            auto& meta = _collection.get_meta_mutable(res.idx);
-            auto& data = _collection.get_data_mutable(res.idx);
-
             // Quiet Update
-            if (data.value && *data.value == value) [[unlikely]] {
+            if (*res.ptr == value) [[unlikely]] {
                 _collection.move_to_front(res.idx);
                 release_lock();
                 return;
             }
 
-            // Full Update
-            uint32_t current_gen = meta.gen.load(std::memory_order_relaxed);
-            meta.gen.store(current_gen + 1, std::memory_order_release);
-
-            auto old_ptr = std::move(data.value);
-            data.value = std::make_shared<ValueType>(std::forward<T>(value));
-            _retired_list.push_back({std::move(old_ptr), BaseEpochManager::current_epoch()});
-
-            meta.gen.store(current_gen + 2, std::memory_order_release);
-            meta.gen.notify_all();
+            auto old = _collection.update_slot(res.idx, std::make_shared<ValueType>(std::forward<decltype(value)>(value)));
+            _retired_list.push_back({std::move(old), this->current_epoch()});
             _collection.move_to_front(res.idx);
         } else {
             // Insert
@@ -2059,7 +2192,7 @@ template <template<typename, typename, std::size_t> class CacheImpl,
     std::size_t ShardsCount = 16>
 requires PowerOfTwoValue<ShardsCount>
 class Lv3_ShardedCache : private NonCopyableNonMoveable {
-    static constexpr std::size_t CacheLine = 64; // Some hardcode :)
+    static constexpr std::size_t CacheLine = sizes::CacheLine;
     static constexpr std::size_t ShardCapacity = TotalCapacity / ShardsCount;
     static_assert(ShardCapacity >= 64, "Shard capacity too small!");
     using Cache = CacheImpl<KeyType, ValueType, ShardCapacity>;
