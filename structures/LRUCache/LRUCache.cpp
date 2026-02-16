@@ -1876,10 +1876,7 @@ public:
         return {nullptr, NullIdx, 0};
     }
 
-    template <typename... Args>
-    void emplace_at(index_type idx, const key_type& key, Args&&... args) noexcept {
-    static_assert(std::is_nothrow_constructible_v<ValueType, Args...>,
-                  "ValueType must be nothrow constructible for safety");
+    void emplace_at(index_type idx, const key_type& key, value_ptr&& new_ptr) noexcept {
         auto& meta = _meta_table[idx];
         auto& data = _data_table[idx];
 
@@ -1887,7 +1884,7 @@ public:
         std::atomic_ref<KeyType> key_ref(meta.key);
         key_ref.store(key, std::memory_order_relaxed);       // Data race avoidance
 
-        data.value = std::make_shared<ValueType>(std::forward<Args>(args)...); // Memory had been allocated by assign_slot
+        data.value = std::move(new_ptr); // Memory had been allocated by assign_slot
 
         meta.state.store(slot_state::Occupied, std::memory_order_release);
         meta.gen.fetch_add(1, std::memory_order_release);
@@ -2105,6 +2102,24 @@ private:
         });
     }
 
+    static void spin_wait(std::atomic_flag& lock) noexcept {
+        uint32_t spin_count = 0;
+        constexpr uint32_t MAX_SPIN = 2048;
+
+        while (lock.test_and_set(std::memory_order_acquire)) {
+            if (++spin_count < MAX_SPIN) [[likely]] {
+                __builtin_ia32_pause(); 
+            } else {
+                std::this_thread::yield();
+                spin_count = 0;
+            }
+        }
+    }
+
+    static void release_lock(std::atomic_flag& lock) noexcept {
+        lock.clear(std::memory_order_release);
+    }
+
 public:
 
     std::shared_ptr<ValueType> get(const KeyType& key) noexcept {
@@ -2127,49 +2142,53 @@ public:
         //CRITICAL  ****    Potential problem if user calls yield
         //NOTE      ****    Use mutex, instead of spin
         //std::lock_guard<std::mutex> lock(_mtx);
-        while (_spin_lock.test_and_set(std::memory_order_acquire)) {
-            __builtin_ia32_pause();
+        spin_wait(_spin_lock);
+        auto res = _collection.lookup(key);
+
+        if (res.ptr) [[likely]] { // Quiet Update
+            if (*res.ptr == value) [[likely]] {
+                _collection.move_to_front(res.idx);
+                 release_lock(_spin_lock);
+                return;
+            }
         }
+
+        release_lock(_spin_lock);
+        auto new_ptr = std::make_shared<ValueType>(std::forward<T>(value));
+
+        spin_wait(_spin_lock);
         BaseEpochManager::bump_epoch();
-        auto release_lock = [this]() { _spin_lock.clear(std::memory_order_release); };
 
         if (_dirty_mask.load(std::memory_order_relaxed)) {
             apply_updates();
         }
 
-        auto res = _collection.lookup(key);
+        auto final_res = _collection.lookup(key);
 
-        if (res.ptr) {
-            // Quiet Update
-            if (*res.ptr == value) [[unlikely]] {
-                _collection.move_to_front(res.idx);
-                release_lock();
-                return;
-            }
-
-            auto old = _collection.update_slot(res.idx, std::make_shared<ValueType>(std::forward<decltype(value)>(value)));
+        if (final_res.ptr) {
+            auto old = _collection.update_slot(final_res.idx, std::move(new_ptr));
             _retired_list.push_back({std::move(old), this->current_epoch()});
-            _collection.move_to_front(res.idx);
+            _collection.move_to_front(final_res.idx);
         } else {
             // Insert
             if (_collection.size() >= Capacity) {
                 auto tail_idx = _collection.get_tail();
                 auto evicted_ptr = _collection.get_data(tail_idx).value;
-                _retired_list.push_back({std::move(evicted_ptr), BaseEpochManager::current_epoch()});
 
+                _retired_list.push_back({std::move(evicted_ptr), BaseEpochManager::current_epoch()});
                 _collection.erase_index(tail_idx);
-                res.idx = _collection.assign_slot(key);
+                final_res.idx = _collection.assign_slot(key);
             }
 
-            _collection.emplace_at(res.idx, key, std::forward<T>(value));
-            _collection.move_to_front(res.idx);
+            _collection.emplace_at(final_res.idx, key, std::move(new_ptr));
+            _collection.move_to_front(final_res.idx);
         }
 
         if (_retired_list.size() >= 64) {
             this->cleanup_retired();
         }
 
-        release_lock();
+        release_lock(_spin_lock);
     }
 
 private:
