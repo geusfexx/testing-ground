@@ -1453,9 +1453,12 @@ public:
         __builtin_prefetch(res.ptr, 0, 3);
 
         auto tid = get_thread_id();
+        if (tid == std::numeric_limits<std::size_t>::max()) [[unlikely]] return {};
+
         if (_update_buffers[tid].push({res.idx, res.gen})) [[likely]] {
-            if (!(_dirty_mask.load(std::memory_order_relaxed) & (1ULL << tid))) {   // Test
-                _dirty_mask.fetch_or(1ULL << tid, std::memory_order_release);       // Test & Set bit in mask
+            const uint64_t mask = 1ULL << tid;
+            if (!(_dirty_mask.load(std::memory_order_relaxed) & mask)) {    // Test
+                _dirty_mask.fetch_or(mask, std::memory_order_release);      // Test & Set bit in mask
             }
         }
 
@@ -1596,8 +1599,6 @@ private:
 
 
 //              Up to 32 cores
-
-
 template <typename T>
 struct HugePagesAllocator {
     using value_type = T;
@@ -1609,28 +1610,39 @@ struct HugePagesAllocator {
 
     struct DirtyArena { //FIXME only to test the hypothesis
         uint8_t* ptr;
-        std::atomic<size_t> offset;
+        std::atomic<size_t> offset{0};
         size_t capacity;
+        struct Node { Node* next; };
+        std::atomic<Node*> free_list{nullptr};
 
         DirtyArena() {
             capacity = 1024 * PageSize; // 2 GiB
             ptr = (uint8_t*)mmap(nullptr, capacity, PROT_READ | PROT_WRITE,
                                  MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
-            offset = 0;
             if (ptr == MAP_FAILED) ptr = nullptr;
         }
         ~DirtyArena() { if (ptr) munmap(ptr, capacity); }
     };
 
-    static DirtyArena& get_arena() noexcept {
+    [[nodiscard]] static DirtyArena& get_arena() noexcept {
         static DirtyArena arena;
         return arena;
     }
 
     [[nodiscard]] T* allocate(std::size_t n) {
+        if (n == 0) [[unlikely]] return nullptr;
         auto& arena = get_arena();
-        size_t bytes = n * sizeof(T);
 
+        if (n == 1) {
+            auto* head = arena.free_list.load(std::memory_order_acquire);
+            while (head && !arena.free_list.compare_exchange_weak(head, head->next,
+                                                                std::memory_order_acq_rel)) {
+                // CAS Loop
+            }
+            if (head) return reinterpret_cast<T*>(head);
+        }
+
+        size_t bytes = n * sizeof(T);
         size_t current_offset = arena.offset.fetch_add(bytes, std::memory_order_relaxed);
 
         if (!arena.ptr || current_offset + bytes > arena.capacity) [[unlikely]] {
@@ -1645,12 +1657,21 @@ struct HugePagesAllocator {
 
     void deallocate(T* p, std::size_t n) noexcept {
         if (!p) [[unlikely]] return;
-
         auto& arena = get_arena();
-        if (p < (T*)arena.ptr || p >= (T*)(arena.ptr + arena.capacity)) {
+
+        if (p >= (T*)arena.ptr && p < (T*)(arena.ptr + arena.capacity)) {
+            if (n == 1) {
+                auto* node = reinterpret_cast<typename DirtyArena::Node*>(p);
+                auto* old_head = arena.free_list.load(std::memory_order_relaxed);
+                do {
+                    node->next = old_head;
+                } while (!arena.free_list.compare_exchange_weak(old_head, node,
+                                                               std::memory_order_release));
+            }
+            // Multi-block allocations (n ​​> 1) are not reused in this arena.
+        } else {
             std::free(p);
         }
-        //TODO
     }
 
     friend bool operator==(const HugePagesAllocator&, const HugePagesAllocator&) = default;
@@ -1684,7 +1705,6 @@ public:
         sizes::prefetch(&_data[i]);
     }
 };
-
 
 template <Hashable KeyType, typename ValueType, std::size_t Capacity = 1024, typename Alloc = HugePagesAllocator<char>>
 requires PowerOfTwoValue<Capacity>
