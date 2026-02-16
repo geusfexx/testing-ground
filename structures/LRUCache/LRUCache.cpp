@@ -1600,38 +1600,57 @@ private:
 
 template <typename T>
 struct HugePagesAllocator {
-
     using value_type = T;
     static inline constexpr size_t PageSize = 2 * sizes::MiB;
 
+    template <typename U> struct rebind { using other = HugePagesAllocator<U>; };
     HugePagesAllocator() noexcept = default;
+    template <typename U> HugePagesAllocator(const HugePagesAllocator<U>&) noexcept {}
 
-    template <typename U>
-    HugePagesAllocator(const HugePagesAllocator<U>&) noexcept {}
+    struct DirtyArena { //FIXME only to test the hypothesis
+        uint8_t* ptr;
+        std::atomic<size_t> offset;
+        size_t capacity;
 
-    T* allocate(std::size_t n) {
-        if (n == 0) return nullptr;
-        if (n > std::numeric_limits<std::size_t>::max() / sizeof(T))
-            throw std::bad_alloc();
+        DirtyArena() {
+            capacity = 1024 * PageSize; // 2 GiB
+            ptr = (uint8_t*)mmap(nullptr, capacity, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+            offset = 0;
+            if (ptr == MAP_FAILED) ptr = nullptr;
+        }
+        ~DirtyArena() { if (ptr) munmap(ptr, capacity); }
+    };
 
-        std::size_t size = sizes::align_up<PageSize>(n * sizeof(T));
+    static DirtyArena& get_arena() noexcept {
+        static DirtyArena arena;
+        return arena;
+    }
 
-        void* ptr = mmap(nullptr, size,
-                         PROT_READ | PROT_WRITE,
-                         MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB,
-                         -1, 0);
+    [[nodiscard]] T* allocate(std::size_t n) {
+        auto& arena = get_arena();
+        size_t bytes = n * sizeof(T);
 
-        if (ptr == MAP_FAILED) { //FIXME
-            throw std::bad_alloc();
+        size_t current_offset = arena.offset.fetch_add(bytes, std::memory_order_relaxed);
+
+        if (!arena.ptr || current_offset + bytes > arena.capacity) [[unlikely]] {
+            // If Huge Pages are out of space or not supported: malloc
+            void* fallback = std::malloc(bytes);
+            if (!fallback) throw std::bad_alloc();
+            return static_cast<T*>(fallback);
         }
 
-        return static_cast<T*>(ptr);
+        return reinterpret_cast<T*>(arena.ptr + current_offset);
     }
 
     void deallocate(T* p, std::size_t n) noexcept {
-        if (!p) return;
-        std::size_t size = sizes::align_up<PageSize>(n * sizeof(T));
-        munmap(p, size);
+        if (!p) [[unlikely]] return;
+
+        auto& arena = get_arena();
+        if (p < (T*)arena.ptr || p >= (T*)(arena.ptr + arena.capacity)) {
+            std::free(p);
+        }
+        //TODO
     }
 
     friend bool operator==(const HugePagesAllocator&, const HugePagesAllocator&) = default;
@@ -2180,10 +2199,14 @@ public:
             }
         release_lock(_spin_lock);
 
-        auto new_ptr = std::make_shared<ValueType>(std::forward<T>(value));
+//        auto new_ptr = std::make_shared<ValueType>(std::forward<T>(value));
+        auto new_ptr = std::allocate_shared<ValueType>(
+            HugePagesAllocator<ValueType>{},
+            std::forward<T>(value)
+        );
 
         spin_wait(_spin_lock);
-            BaseEpochManager::bump_epoch();
+            this->bump_epoch();
 
             if (_dirty_mask.load(std::memory_order_relaxed)) {
                 apply_updates();
