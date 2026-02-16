@@ -17,19 +17,19 @@ SCENARIO: Readers(28) Writers(4) Iterations: 100 M
                    | NORMAL MODE |
 --------------------------------------------------------
   CacheSize:         65536   KeyRange:            64880
-  Payload Size:      65536   Shards amount:          32
+  Payload Size:        128   Shards amount:          32
 ========================================================
 
 Testing: Lv2_Sharded<Lv4_SPSCBuffer_DeferredFlatLRU>...
-Time: 47.2467 s 
-Ops/sec: 67.730 M
-Avg Latency: 14.7646 ns
+Time: 25.5513 s 
+Ops/sec: 125.238 M
+Avg Latency: 7.98479 ns
 Misses: 0.000 (0.00%)
 
 Testing: Lv3_Sharded<Lv5_SPSCBuffer_DeferredFlatLRU>...
-Time: 37.68 s 
-Ops/sec: 84.923 M
-Avg Latency: 11.78 ns
+Time: 23.20 s 
+Ops/sec: 137.959 M
+Avg Latency: 7.25 ns
 Misses: 0.000 (0.00%)
 
 Done: 32 threads finished.
@@ -40,19 +40,19 @@ SCENARIO: Readers(28) Writers(4) Iterations: 100 M
                    | NORMAL MODE |
 --------------------------------------------------------
   CacheSize:         65536   KeyRange:            64880
-  Payload Size:        128   Shards amount:          32
+  Payload Size:      65536   Shards amount:          32
 ========================================================
 
 Testing: Lv2_Sharded<Lv4_SPSCBuffer_DeferredFlatLRU>...
-Time: 25.5112 s 
-Ops/sec: 125.435 M
-Avg Latency: 7.97224 ns
+Time: 47.8037 s 
+Ops/sec: 66.940 M
+Avg Latency: 14.9386 ns
 Misses: 0.000 (0.00%)
 
 Testing: Lv3_Sharded<Lv5_SPSCBuffer_DeferredFlatLRU>...
-Time: 34.62 s 
-Ops/sec: 92.421 M
-Avg Latency: 10.82 ns
+Time: 26.37 s 
+Ops/sec: 121.337 M
+Avg Latency: 8.24 ns
 Misses: 0.000 (0.00%)
 
 Done: 32 threads finished.
@@ -67,16 +67,16 @@ SCENARIO: Readers(28) Writers(4) Iterations: 100 M
 ========================================================
 
 Testing: Lv2_Sharded<Lv4_SPSCBuffer_DeferredFlatLRU>...
-Time: 31.0576 s 
-Ops/sec: 103.034 M
-Avg Latency: 9.70551 ns
-Misses: 467.225 M (16.69%)
+Time: 31.52 s 
+Ops/sec: 101.523 M
+Avg Latency: 9.85 ns
+Misses: 474.469 M (16.95%)
 
 Testing: Lv3_Sharded<Lv5_SPSCBuffer_DeferredFlatLRU>...
-Time: 52.30 s 
-Ops/sec: 61.185 M
-Avg Latency: 16.34 ns
-Misses: 585.394 M (20.91%)
+Time: 31.97 s 
+Ops/sec: 100.091 M
+Avg Latency: 9.99 ns
+Misses: 528.029 M (18.86%)
 
 Done: 32 threads finished.
 
@@ -90,16 +90,15 @@ SCENARIO: Readers(28) Writers(4) Iterations: 100 M
 ========================================================
 
 Testing: Lv2_Sharded<Lv4_SPSCBuffer_DeferredFlatLRU>...
-Time: 200.947 s 
-Ops/sec: 15.925 M
-Avg Latency: 62.7959 ns
-Misses: 469.078 M (16.75%)
+Time: 199.907 s 
+Ops/sec: 16.007 M
+Avg Latency: 62.471 ns
+Misses: 480.243 M (17.15%)
 
 Testing: Lv3_Sharded<Lv5_SPSCBuffer_DeferredFlatLRU>...
-Time: 177.21 s 
-Ops/sec: 18.057 M
-Avg Latency: 55.38 ns
-Misses: 532.082 M (19.00%)
+Time: 135.76 s 
+Ops/sec: 23.570 M
+Avg Latency: 42.43 ns
+Misses: 470.611 M (16.81%)
 
 Done: 32 threads finished.
-
