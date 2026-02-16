@@ -2120,6 +2120,32 @@ private:
         lock.clear(std::memory_order_release);
     }
 
+     //Insert or update path (eviction is included)
+     //CRITICAL section!
+    void commit_put(const KeyType& key, std::shared_ptr<ValueType>&& new_ptr) noexcept {
+        auto final_res = _collection.lookup(key);
+
+        if (final_res.ptr) [[likely]] {
+            // Update
+            auto old = _collection.update_slot(final_res.idx, std::move(new_ptr));
+            _retired_list.push_back({std::move(old), this->current_epoch()});
+        } else {
+            // Insert
+            if (_collection.size() >= Capacity) [[unlikely]] {
+                auto tail_idx = _collection.get_tail();
+                auto evicted_ptr = _collection.get_data(tail_idx).value;
+
+                _retired_list.push_back({std::move(evicted_ptr), this->current_epoch()});
+                _collection.erase_index(tail_idx);
+                final_res.idx = _collection.assign_slot(key);
+            }
+
+            _collection.emplace_at(final_res.idx, key, std::move(new_ptr));
+        }
+
+        _collection.move_to_front(final_res.idx);
+    }
+
 public:
 
     std::shared_ptr<ValueType> get(const KeyType& key) noexcept {
@@ -2143,50 +2169,31 @@ public:
         //NOTE      ****    Use mutex, instead of spin
         //std::lock_guard<std::mutex> lock(_mtx);
         spin_wait(_spin_lock);
-        auto res = _collection.lookup(key);
+            auto res = _collection.lookup(key);
 
-        if (res.ptr) [[likely]] { // Quiet Update
-            if (*res.ptr == value) [[likely]] {
-                _collection.move_to_front(res.idx);
-                 release_lock(_spin_lock);
-                return;
+            if (res.ptr) [[likely]] { // Quiet Update
+                if (*res.ptr == value) [[likely]] {
+                    _collection.move_to_front(res.idx);
+                     release_lock(_spin_lock);
+                    return;
+                }
             }
-        }
-
         release_lock(_spin_lock);
+
         auto new_ptr = std::make_shared<ValueType>(std::forward<T>(value));
 
         spin_wait(_spin_lock);
-        BaseEpochManager::bump_epoch();
+            BaseEpochManager::bump_epoch();
 
-        if (_dirty_mask.load(std::memory_order_relaxed)) {
-            apply_updates();
-        }
-
-        auto final_res = _collection.lookup(key);
-
-        if (final_res.ptr) {
-            auto old = _collection.update_slot(final_res.idx, std::move(new_ptr));
-            _retired_list.push_back({std::move(old), this->current_epoch()});
-            _collection.move_to_front(final_res.idx);
-        } else {
-            // Insert
-            if (_collection.size() >= Capacity) {
-                auto tail_idx = _collection.get_tail();
-                auto evicted_ptr = _collection.get_data(tail_idx).value;
-
-                _retired_list.push_back({std::move(evicted_ptr), BaseEpochManager::current_epoch()});
-                _collection.erase_index(tail_idx);
-                final_res.idx = _collection.assign_slot(key);
+            if (_dirty_mask.load(std::memory_order_relaxed)) {
+                apply_updates();
             }
 
-            _collection.emplace_at(final_res.idx, key, std::move(new_ptr));
-            _collection.move_to_front(final_res.idx);
-        }
+            commit_put(key, std::move(new_ptr));
 
-        if (_retired_list.size() >= 64) {
-            this->cleanup_retired();
-        }
+            if (_retired_list.size() >= 64) {
+                this->cleanup_retired();
+            }
 
         release_lock(_spin_lock);
     }
@@ -2197,11 +2204,11 @@ private:
     std::vector<RetiredObject> _retired_list;
 
     cacheMap            _collection;
-    //std::mutex          _mtx;
 
     //CRITICAL  ****    Potential problem if user calls yield
     //NOTE      ****    Use mutex, instead of spin
     std::atomic_flag    _spin_lock = ATOMIC_FLAG_INIT;
+    //std::mutex          _mtx;
 };
 
 //  Wrapper for SharedLRU
