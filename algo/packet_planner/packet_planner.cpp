@@ -3,7 +3,6 @@
 #include <numeric>
 #include <ranges>
 #include <functional>
-#include <list>
 #include <iostream>
 #include <cassert>
 
@@ -30,26 +29,27 @@ std::vector<std::vector<DataRef>> makePlaning(  uint32_t const totalMaxValue,
     });// O(N log N) or O(N^2)
 
     std::vector<std::vector<DataRef>> res;
-    std::list<DataRef> remainingItems(sortedRefs.begin(), sortedRefs.end());
+    std::vector<bool> used(sortedRefs.size(), false);
+    uint32_t remaining = sortedRefs.size();
 
-    while (!remainingItems.empty()) {
+     while (remaining > 0) {
         auto& currentBatch = res.emplace_back();
         currentBatch.reserve(totalMaxCount);
         uint64_t currentSumValue = 0;
 
-        auto it = remainingItems.begin();
-        while (it != remainingItems.end()) {
-            const Data& item = it->get();
+        for (std::size_t i = 0; i < sortedRefs.size(); ++i) {
+            if (used[i]) continue;
+
+            const Data& item = sortedRefs[i].get();
 
             if (currentBatch.size() < totalMaxCount && (currentSumValue + item.value) <= totalMaxValue) {
-                currentBatch.push_back(*it);
+                currentBatch.push_back(sortedRefs[i]);
                 currentSumValue += item.value;
-                it = remainingItems.erase(it);
+                used[i] = true;
+                remaining--;
 
                 if (currentBatch.size() == totalMaxCount || currentSumValue == totalMaxValue)
                     break;
-            } else {
-                ++it;
             }
         }
 
