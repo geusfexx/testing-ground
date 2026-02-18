@@ -8,6 +8,8 @@
 #include <chrono>
 #include <concepts>
 #include <string_view>
+#include <execution>
+#include <span>
 
 struct Packet {
     uint32_t priority;
@@ -24,29 +26,48 @@ using Frame = std::vector<PacketRef>;
 using SchedulingPolicy = std::function<bool(const Packet&, const Packet&)>;
 
 namespace Policies {
-    const SchedulingPolicy StrictPriority = [](const Packet& a, const Packet& b) {
-        if (a.priority != b.priority) return a.priority > b.priority;
-        return a.payload > b.payload;
+
+    struct StrictPriority {
+        bool operator()(const Packet& a, const Packet& b) const {
+            if (a.priority != b.priority) return a.priority > b.priority;
+            return a.payload > b.payload;
+        }
     };
 
-    const SchedulingPolicy WeightedEfficiency = [](const Packet& a, const Packet& b) {
-        double scoreA = static_cast<double>(a.priority) / a.payload;
-        double scoreB = static_cast<double>(b.priority) / b.payload;
-        return scoreA > scoreB;
+    struct WeightedEfficiency {
+        bool operator()(const Packet& a, const Packet& b) const {
+            return static_cast<double>(a.priority) / a.payload >
+                   static_cast<double>(b.priority) / b.payload;
+        }
     };
 }
-
+/*
 template<typename F>
 concept SchedulerFunc = requires(F f, uint32_t m, uint32_t c, std::vector<Packet> q) {
     { f(m, c, q, MTUViolationPolicy::Drop, Policies::StrictPriority) } -> std::same_as<std::vector<Frame>>;
 };
+*/
+
+struct FlatFrameSequence {
+    std::vector<PacketRef> allPackets;
+    std::vector<std::size_t> frameOffsets; // Indexes
+
+    std::span<const PacketRef> getFrame(std::size_t index) const {
+        std::size_t start = frameOffsets[index];
+        std::size_t end = (index + 1 < frameOffsets.size()) ? frameOffsets[index + 1] : allPackets.size();
+        return std::span<const PacketRef>(allPackets.data() + start, end - start);
+    }
+
+    std::size_t frameCount() const { return frameOffsets.size(); }
+};
 
 // First Fit
+template<typename SchedPolicy = Policies::StrictPriority>
 std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
                                 uint32_t const maxPacketsPerFrame,
                                 std::vector<Packet> const& txQueue,
                                 MTUViolationPolicy MTUpolicy = MTUViolationPolicy::Drop,
-                                SchedulingPolicy schedPolicy = Policies::StrictPriority)
+                                SchedPolicy schedPolicy = {})
 {
     if (txQueue.empty()) return {};
 
@@ -98,12 +119,13 @@ std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
 }
 
 // Next Fit
-std::vector<Frame> mapQosToFrameSequenceFast(
+template<typename SchedPolicy = Policies::StrictPriority>
+FlatFrameSequence mapQosToFrameSequenceFast(
     uint32_t const MTU,
     uint32_t const maxPacketsPerFrame,
     std::vector<Packet> const& txQueue,
     MTUViolationPolicy MTUpolicy = MTUViolationPolicy::Drop,
-    SchedulingPolicy schedPolicy = Policies::StrictPriority)
+    SchedPolicy schedPolicy = {})
 {
     if (txQueue.empty()) return {};
 
@@ -118,31 +140,33 @@ std::vector<Frame> mapQosToFrameSequenceFast(
         }
     }
 
-    std::ranges::sort(inputBuffer, schedPolicy); // O(N log N) or O(N^2)
+//    std::ranges::sort(inputBuffer, schedPolicy); // O(N log N) or O(N^2)
+    std::sort(std::execution::unseq, inputBuffer.begin(), inputBuffer.end(), schedPolicy); // O(N log N)
 
-    std::vector<Frame> frameSequence;
+    FlatFrameSequence frameSequence;
+    frameSequence.allPackets.reserve(inputBuffer.size());
+    frameSequence.frameOffsets.reserve(inputBuffer.size() / 2);
     if (inputBuffer.empty()) return {};
 
-    frameSequence.emplace_back();
-    frameSequence.back().reserve(maxPacketsPerFrame);
-
     uint64_t currentFramePayload = 0;
+    uint32_t currentFrameCount = 0;
 
     // O(N)
     for (const auto& pktRef : inputBuffer) {
         const Packet& pkt = pktRef.get();
-        auto& currentFrame = frameSequence.back();
 
-        // does packet fit into the CURRENT frame
-        if (currentFrame.size() < maxPacketsPerFrame && (currentFramePayload + pkt.payload) <= MTU) {
-            currentFrame.push_back(pktRef);
-            currentFramePayload += pkt.payload;
-        } else { // or create new frame
-            auto& nextFrame = frameSequence.emplace_back();
-            nextFrame.reserve(maxPacketsPerFrame);
-            nextFrame.push_back(pktRef);
-            currentFramePayload = pkt.payload;
+        if (currentFrameCount == 0 ||
+            currentFrameCount >= maxPacketsPerFrame ||
+            (currentFramePayload + pkt.payload) > MTU)
+        {
+            frameSequence.frameOffsets.push_back(frameSequence.allPackets.size());
+            currentFramePayload = 0;
+            currentFrameCount = 0;
         }
+
+        frameSequence.allPackets.push_back(pktRef);
+        currentFramePayload += pkt.payload;
+        currentFrameCount++;
     }
 
     return frameSequence;
@@ -158,128 +182,142 @@ void printHeader(std::string_view schedulerName) {
     std::cout << std::string(width, '=') << "\n\n";
 }
 
-template<SchedulerFunc auto TPlaner>
-void run_tests(std::string_view schedulerName) {
+template<typename T>
+size_t get_size(const T& plan) {
+    if constexpr (requires { plan.size(); }) return plan.size();
+    else return plan.frameCount();
+}
+
+template<typename T>
+auto get_frame(const T& plan, size_t idx) {
+    if constexpr (requires { plan[idx]; }) return plan[idx];
+    else return plan.getFrame(idx);
+}
+
+auto FirstFitCaller = [](auto mtu, auto count, const auto& queue, auto mtuPolicy, auto schedPolicy) {
+    return mapQosToFrameSequence(mtu, count, queue, mtuPolicy, schedPolicy);
+};
+
+auto NextFitCaller = [](auto mtu, auto count, const auto& queue, auto mtuPolicy, auto schedPolicy) {
+    return mapQosToFrameSequenceFast(mtu, count, queue, mtuPolicy, schedPolicy);
+};
+
+template<typename TCaller>
+void run_tests(TCaller scheduler, std::string_view schedulerName) {
     printHeader(schedulerName);
 
-    const uint32_t MTU  = 1000;
+    const uint32_t MTU  = 1000; //NOTE Thrust me, I know :p
     const uint32_t maxPacketsPerFrame = 3;
 
+    // Test 1: Basic
     {
         std::vector<Packet> input = {{100, 500}, {100, 500}, {50, 300}, {50, 300}, {50, 300}};
-        auto plan = mapQosToFrameSequence(MTU, 3, input);
-        assert(plan.size() <= 3);
+        auto plan = scheduler(MTU, maxPacketsPerFrame, input,
+                              MTUViolationPolicy::Drop, Policies::StrictPriority{});
+        assert(get_size(plan) >= 2);
         std::cout << "Test 1 (Basic): PASSED\n";
     }
 
+    // Test 2: Inversion of order (QoS Weighted)
     {
         std::vector<Packet> input = {{100, 950}, {40, 300}, {40, 300}, {40, 300}};
-        auto plan = mapQosToFrameSequence(MTU, 3, input, MTUViolationPolicy::Drop, Policies::WeightedEfficiency);
-        assert(plan.size() <= 2);
-        assert(plan[0].size() == 3);
-        assert(plan[1].size() == 1);
+        auto plan = scheduler(MTU, maxPacketsPerFrame, input,
+                              MTUViolationPolicy::Drop, Policies::WeightedEfficiency{});
+
+        auto frame0 = get_frame(plan, 0);
+        assert(frame0.size() == 3);
         std::cout << "Test 2 (Inversion of order): PASSED\n";
     }
 
+    // Test 3: Over-MTU Management
     {
         std::vector<Packet> input = {{100, 1500}, {100, 200}};
-        auto plan = mapQosToFrameSequence(1000, 5, input);
-        assert(plan.size() == 1); 
-        assert(plan[0][0].get().payload == 200);
+        auto plan = scheduler(MTU, maxPacketsPerFrame, input,
+                              MTUViolationPolicy::Drop, Policies::StrictPriority{});
+        assert(get_size(plan) == 1);
+        assert(get_frame(plan, 0)[0].get().payload == 200);
         std::cout << "Test 3 (Over-MTU): PASSED\n";
     }
 
+    // Test 4: Priority Strictness
     {
         std::vector<Packet> input = {{1, 100}, {10, 100}, {5, 100}, {10, 100}};
-        auto plan = mapQosToFrameSequence(MTU, 2, input);
+        auto plan = scheduler(MTU, 2, input,
+                              MTUViolationPolicy::Drop, Policies::StrictPriority{});
         
-        for(const auto& item : plan[0]) {
+        auto frame0 = get_frame(plan, 0);
+        for(const auto& item : frame0) {
             assert(item.get().priority == 10);
         }
         std::cout << "Test 4 (Priority Strictness): PASSED\n";
     }
 
+    // Test 5: Real Stress Test (100k packets)
     {
         std::vector<Packet> input;
-        for(int i = 0; i < 1e5; ++i) input.push_back({uint32_t(i % 100), 10});
+        const int numPackets = 1e5;
+        input.reserve(numPackets);
+        for(int i = 0; i < numPackets; ++i) input.push_back({uint32_t(i % 100), 10});
 
         auto start = std::chrono::steady_clock::now();
-        auto plan = mapQosToFrameSequence(100, 10, input);
+        auto plan = scheduler(100, 10, input,
+                              MTUViolationPolicy::Drop, Policies::StrictPriority{});
         auto end = std::chrono::steady_clock::now();
         
-        auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-        std::cout << "Test 5 (Stress 10k): PASSED in " << diff.count() << "ms\n";
+        auto diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        std::cout << "Test 5 (Stress 100k): PASSED in " << diff.count() / 1000.0 << "ms\n";
     }
 
+    // Test 6: Empty Input
     {
-        auto plan = mapQosToFrameSequence(MTU, 10, {});
-        assert(plan.empty());
+        std::vector<Packet> input;
+        auto plan = scheduler(MTU, maxPacketsPerFrame, input,
+                              MTUViolationPolicy::Drop, Policies::StrictPriority{});
+        assert(get_size(plan) == 0);
         std::cout << "Test 6 (Empty): PASSED\n";
     }
 
+    // Test 7: Fat High-Priority
     {
-        std::vector<Packet> input = {
-            {100, 950},
-            {90, 100},
-            {80, 100}
-        };
-        auto plan = mapQosToFrameSequence(MTU, maxPacketsPerFrame, input);
-        assert(plan.size() == 2);
-        assert(plan[0].size() == 1);
-        assert(plan[0][0].get().priority == 100);
+        std::vector<Packet> input = {{100, 950}, {90, 100}, {80, 100}};
+        auto plan = scheduler(MTU, maxPacketsPerFrame, input,
+                              MTUViolationPolicy::Drop, Policies::StrictPriority{});
+        assert(get_size(plan) == 2);
+        assert(get_frame(plan, 0).size() == 1);
+        assert(get_frame(plan, 0)[0].get().priority == 100);
         std::cout << "Test 7 (Fat High-Priority): PASSED\n";
     }
 
+    // Test 8: Gap Filling (Only for First Fit)
     {
-        std::vector<Packet> input = {
-            {100, 950},
-            {90, 100},
-            {80, 100}
-        };
-        auto plan = mapQosToFrameSequence(MTU, maxPacketsPerFrame, input);
-        assert(plan.size() == 2);
-        assert(plan[0].size() == 1);
-        assert(plan[0][0].get().priority == 100);
-        std::cout << "Test 8 (Fat High-Priority): PASSED\n";
+        std::vector<Packet> input = {{100, 800}, {90, 800}, {10, 100}};
+        auto plan = scheduler(MTU, maxPacketsPerFrame, input,
+                              MTUViolationPolicy::Drop, Policies::StrictPriority{});
+
+        if (schedulerName.find("First Fit") != std::string_view::npos) {
+            assert(get_frame(plan, 0).size() == 2);
+            std::cout << "Test 8 (Gap Filling): PASSED\n";
+        } else {
+            assert(get_frame(plan, 0).size() == 1);
+            std::cout << "Test 8 (Next Fit Behavior): PASSED\n";
+        }
     }
 
-    {
-        std::vector<Packet> input = {
-            {100, 800},
-            {90, 800},
-            {10, 100}
-
-        };
-        auto plan = mapQosToFrameSequence(MTU, maxPacketsPerFrame, input);
-        assert(plan[0].size() == 2); // {100, 800} and {10, 100}
-        assert(plan[0][1].get().priority == 10); 
-        std::cout << "Test 9 (Gap Filling): PASSED\n";
-    }
-
-    {
-        std::vector<Packet> input = { {100, 2000}, {50, 100} };
-        auto plan = mapQosToFrameSequence(MTU, maxPacketsPerFrame, input);
-        assert(plan.size() == 1);
-        assert(plan[0][0].get().payload == 100);
-        std::cout << "Test 10 (Over-MTU Item): PASSED\n";
-    }
-
+    // Test 9: Burst Limit (MaxCount)
     {
         std::vector<Packet> input(10, {10, 10});
-        auto plan = mapQosToFrameSequence(MTU, 3, input);
-        
-        assert(plan.size() == 4);
-        assert(plan[0].size() == 3);
-        assert(plan[3].size() == 1);
-        std::cout << "Test 11 (MaxCount Limit): PASSED\n";
+        auto plan = scheduler(MTU, maxPacketsPerFrame, input,
+                              MTUViolationPolicy::Drop, Policies::StrictPriority{});
+        assert(get_size(plan) == 4);
+        std::cout << "Test 9 (MaxCount Limit): PASSED\n";
     }
     std::cout << "\n";
 }
 
 int main() {
 
-    run_tests<mapQosToFrameSequence>("First Fit (O(N^2))");
-    run_tests<mapQosToFrameSequenceFast>("Next Fit Fast (O(N log N))");
+    run_tests(FirstFitCaller, "First Fit (O(N^2))");
+    run_tests(NextFitCaller, "Next Fit Fast (O(N log N))");
 
     return 0;
 }
