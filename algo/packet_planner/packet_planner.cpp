@@ -7,49 +7,50 @@
 #include <cassert>
 #include <chrono>
 
-struct Data {
+struct Packet {
     uint32_t priority;
-    uint32_t value;
+    uint32_t payload;
 };
 
-using DataRef = std::reference_wrapper<const Data>;
+using PacketRef = std::reference_wrapper<const Packet>;
+using Frame = std::vector<PacketRef>;
 
-std::vector<std::vector<DataRef>> makePlaning(  uint32_t const totalMaxValue,
-                                                uint32_t const totalMaxCount,
-                                                std::vector<Data> const& input)
+std::vector<Frame> makePlaning( uint32_t const MTU,
+                                uint32_t const maxPacketsPerFrame,
+                                std::vector<Packet> const& txQueue)
 {
-    if (input.empty()) return {};
+    if (txQueue.empty()) return {};
 
-    std::vector<DataRef> sortedRefs;
-    sortedRefs.reserve(input.size());
-    for (const auto& item : input) sortedRefs.emplace_back(item);
+    Frame inputBuffer;
+    inputBuffer.reserve(txQueue.size());
+    for (const auto& item : txQueue) inputBuffer.emplace_back(item);
 
-    std::ranges::sort(sortedRefs, [](const Data& a, const Data& b) {
+    std::ranges::sort(inputBuffer, [](const Packet& a, const Packet& b) {
         if (a.priority != b.priority) return a.priority > b.priority;
-        return a.value > b.value;
+        return a.payload > b.payload;
     });// O(N log N) or O(N^2)
 
-    std::vector<std::vector<DataRef>> res;
-    std::vector<bool> used(sortedRefs.size(), false);
-    uint32_t remaining = sortedRefs.size();
+    std::vector<Frame> frameSequence;
+    std::vector<bool> used(inputBuffer.size(), false);
+    uint32_t remaining = inputBuffer.size();
 
-     while (remaining > 0) { // O (N)
-        auto& currentBatch = res.emplace_back();
-        currentBatch.reserve(totalMaxCount);
+     while (remaining > 0) { // O (N^2)
+        auto& currentBatch = frameSequence.emplace_back();
+        currentBatch.reserve(maxPacketsPerFrame);
         uint64_t currentSumValue = 0;
 
-        for (std::size_t i = 0; i < sortedRefs.size(); ++i) {
+        for (std::size_t i = 0; i < inputBuffer.size(); ++i) {
             if (used[i]) continue;
 
-            const Data& item = sortedRefs[i].get();
+            const Packet& item = inputBuffer[i].get();
 
-            if (currentBatch.size() < totalMaxCount && (currentSumValue + item.value) <= totalMaxValue) {
-                currentBatch.push_back(sortedRefs[i]);
-                currentSumValue += item.value;
+            if (currentBatch.size() < maxPacketsPerFrame && (currentSumValue + item.payload) <= MTU) {
+                currentBatch.push_back(inputBuffer[i]);
+                currentSumValue += item.payload;
                 used[i] = true;
                 remaining--;
 
-                if (currentBatch.size() == totalMaxCount || currentSumValue == totalMaxValue)
+                if (currentBatch.size() == maxPacketsPerFrame || currentSumValue == MTU)
                     break;
             }
         }
@@ -57,39 +58,39 @@ std::vector<std::vector<DataRef>> makePlaning(  uint32_t const totalMaxValue,
         if (currentBatch.empty()) break;
     }
 
-    return res;
+    return frameSequence;
 }
 
 void run_tests() {
-    const uint32_t totalMaxValue  = 1000;
-    const uint32_t totalMaxCount = 3;
+    const uint32_t MTU  = 1000;
+    const uint32_t maxPacketsPerFrame = 3;
 
     {
-        std::vector<Data> input = {{100, 500}, {100, 500}, {50, 300}, {50, 300}, {50, 300}};
-        auto plan = makePlaning(totalMaxValue, 3, input);
+        std::vector<Packet> input = {{100, 500}, {100, 500}, {50, 300}, {50, 300}, {50, 300}};
+        auto plan = makePlaning(MTU, 3, input);
         assert(plan.size() <= 3);
         std::cout << "Test 1 (Basic): PASSED\n";
     }
 /*
     {
-        std::vector<Data> input = {{100, 950}, {40, 300}, {40, 300}, {40, 300}};
-        auto plan = makePlaning(totalMaxValue, 3, input);
+        std::vector<Packet> input = {{100, 950}, {40, 300}, {40, 300}, {40, 300}};
+        auto plan = makePlaning(MTU, 3, input);
         assert(plan.size() <= 2);
         assert(plan[0].size() == 3);
         std::cout << "Test 2 (Inversion of order): PASSED\n";
     }
 
     {
-        std::vector<Data> input = {{100, 1500}, {100, 200}};
+        std::vector<Packet> input = {{100, 1500}, {100, 200}};
         auto plan = makePlaning(1000, 5, input);
         assert(plan.size() == 1); 
-        assert(plan[0][0].get().value == 200);
-        std::cout << "Test 3 (Over-totalMaxValue): PASSED\n";
+        assert(plan[0][0].get().payload == 200);
+        std::cout << "Test 3 (Over-MTU): PASSED\n";
     }
 */
     {
-        std::vector<Data> input = {{1, 100}, {10, 100}, {5, 100}, {10, 100}};
-        auto plan = makePlaning(totalMaxValue, 2, input);
+        std::vector<Packet> input = {{1, 100}, {10, 100}, {5, 100}, {10, 100}};
+        auto plan = makePlaning(MTU, 2, input);
         
         for(const auto& item : plan[0]) {
             assert(item.get().priority == 10);
@@ -98,7 +99,7 @@ void run_tests() {
     }
 
     {
-        std::vector<Data> input;
+        std::vector<Packet> input;
         for(int i = 0; i < 10000; ++i) input.push_back({uint32_t(i % 100), 10});
 
         auto start = std::chrono::steady_clock::now();
@@ -110,18 +111,18 @@ void run_tests() {
     }
 
     {
-        auto plan = makePlaning(totalMaxValue, 10, {});
+        auto plan = makePlaning(MTU, 10, {});
         assert(plan.empty());
         std::cout << "Test 6 (Empty): PASSED\n";
     }
 
     {
-        std::vector<Data> input = {
+        std::vector<Packet> input = {
             {100, 950},
             {90, 100},
             {80, 100}
         };
-        auto plan = makePlaning(totalMaxValue, totalMaxCount, input);
+        auto plan = makePlaning(MTU, maxPacketsPerFrame, input);
         assert(plan.size() == 2);
         assert(plan[0].size() == 1);
         assert(plan[0][0].get().priority == 100);
@@ -129,12 +130,12 @@ void run_tests() {
     }
 
     {
-        std::vector<Data> input = {
+        std::vector<Packet> input = {
             {100, 950},
             {90, 100},
             {80, 100}
         };
-        auto plan = makePlaning(totalMaxValue, totalMaxCount, input);
+        auto plan = makePlaning(MTU, maxPacketsPerFrame, input);
         assert(plan.size() == 2);
         assert(plan[0].size() == 1);
         assert(plan[0][0].get().priority == 100);
@@ -142,29 +143,29 @@ void run_tests() {
     }
 
     {
-        std::vector<Data> input = {
+        std::vector<Packet> input = {
             {100, 800},
             {90, 800},
             {10, 100}
 
         };
-        auto plan = makePlaning(totalMaxValue, totalMaxCount, input);
+        auto plan = makePlaning(MTU, maxPacketsPerFrame, input);
         assert(plan[0].size() == 2); // {100, 800} и {10, 100}
         assert(plan[0][1].get().priority == 10); 
         std::cout << "Test 9 (Gap Filling): PASSED\n";
     }
 /*
     {
-        std::vector<Data> input = { {100, 2000}, {50, 100} };
-        auto plan = makePlaning(totalMaxValue, totalMaxCount, input);
+        std::vector<Packet> input = { {100, 2000}, {50, 100} };
+        auto plan = makePlaning(MTU, maxPacketsPerFrame, input);
         assert(plan.size() == 1);
-        assert(plan[0][0].get().value == 100);
-        std::cout << "Test 10 (Over-totalMaxValue Item): PASSED\n";
+        assert(plan[0][0].get().payload == 100);
+        std::cout << "Test 10 (Over-MTU Item): PASSED\n";
     }
 */
     {
-        std::vector<Data> input(10, {10, 10});
-        auto plan = makePlaning(totalMaxValue, 3, input);
+        std::vector<Packet> input(10, {10, 10});
+        auto plan = makePlaning(MTU, 3, input);
         
         assert(plan.size() == 4);
         assert(plan[0].size() == 3);
