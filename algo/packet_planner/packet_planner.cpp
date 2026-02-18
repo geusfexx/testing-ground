@@ -7,6 +7,7 @@
 #include <cassert>
 #include <chrono>
 #include <concepts>
+#include <string_view>
 
 struct Packet {
     uint32_t priority;
@@ -147,11 +148,20 @@ std::vector<Frame> mapQosToFrameSequenceFast(
     return frameSequence;
 }
 
+void printHeader(std::string_view schedulerName) {
+    constexpr uint32_t width = 42;
+    const uint32_t padding = (width - 2 - schedulerName.length()) / 2;
+
+    std::cout << "\n" << std::string(width, '=') << "\n";
+    std::cout << "=" << std::string(padding, ' ') << schedulerName
+              << std::string(width - 2 - padding - schedulerName.length(), ' ') << "=\n";
+    std::cout << std::string(width, '=') << "\n\n";
+}
+
 template<SchedulerFunc auto TPlaner>
-void run_tests(std::string const& schedulerName) {
-    std::cout << "======================================\n";
-    std::cout << " Testing: " << schedulerName << "\n";
-    std::cout << "======================================\n\n";
+void run_tests(std::string_view schedulerName) {
+    printHeader(schedulerName);
+
     const uint32_t MTU  = 1000;
     const uint32_t maxPacketsPerFrame = 3;
 
