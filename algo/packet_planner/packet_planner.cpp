@@ -6,6 +6,7 @@
 #include <iostream>
 #include <cassert>
 #include <chrono>
+#include <concepts>
 
 struct Packet {
     uint32_t priority;
@@ -34,6 +35,12 @@ namespace Policies {
     };
 }
 
+template<typename F>
+concept SchedulerFunc = requires(F f, uint32_t m, uint32_t c, std::vector<Packet> q) {
+    { f(m, c, q, MTUViolationPolicy::Drop, Policies::StrictPriority) } -> std::same_as<std::vector<Frame>>;
+};
+
+// First Fit
 std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
                                 uint32_t const maxPacketsPerFrame,
                                 std::vector<Packet> const& txQueue,
@@ -56,7 +63,7 @@ std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
         inputBuffer.emplace_back(pkt);
     }
 
-    std::ranges::sort(inputBuffer, schedPolicy);// O(N log N) or O(N^2)
+    std::ranges::sort(inputBuffer, schedPolicy); // O(N log N) or O(N^2)
 
     std::vector<Frame> frameSequence;
     std::vector<bool> used(inputBuffer.size(), false);
@@ -89,7 +96,62 @@ std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
     return frameSequence;
 }
 
-void run_tests() {
+// Next Fit
+std::vector<Frame> mapQosToFrameSequenceFast(
+    uint32_t const MTU,
+    uint32_t const maxPacketsPerFrame,
+    std::vector<Packet> const& txQueue,
+    MTUViolationPolicy MTUpolicy = MTUViolationPolicy::Drop,
+    SchedulingPolicy schedPolicy = Policies::StrictPriority)
+{
+    if (txQueue.empty()) return {};
+
+    // O(N)
+    Frame inputBuffer;
+    inputBuffer.reserve(txQueue.size());
+    for (const auto& pkt : txQueue) {
+        if (pkt.payload <= MTU) {
+            inputBuffer.emplace_back(pkt);
+        } else if (MTUpolicy == MTUViolationPolicy::Fragment) {
+            //TODO
+        }
+    }
+
+    std::ranges::sort(inputBuffer, schedPolicy); // O(N log N) or O(N^2)
+
+    std::vector<Frame> frameSequence;
+    if (inputBuffer.empty()) return {};
+
+    frameSequence.emplace_back();
+    frameSequence.back().reserve(maxPacketsPerFrame);
+
+    uint64_t currentFramePayload = 0;
+
+    // O(N)
+    for (const auto& pktRef : inputBuffer) {
+        const Packet& pkt = pktRef.get();
+        auto& currentFrame = frameSequence.back();
+
+        // does packet fit into the CURRENT frame
+        if (currentFrame.size() < maxPacketsPerFrame && (currentFramePayload + pkt.payload) <= MTU) {
+            currentFrame.push_back(pktRef);
+            currentFramePayload += pkt.payload;
+        } else { // or create new frame
+            auto& nextFrame = frameSequence.emplace_back();
+            nextFrame.reserve(maxPacketsPerFrame);
+            nextFrame.push_back(pktRef);
+            currentFramePayload = pkt.payload;
+        }
+    }
+
+    return frameSequence;
+}
+
+template<SchedulerFunc auto TPlaner>
+void run_tests(std::string const& schedulerName) {
+    std::cout << "======================================\n";
+    std::cout << " Testing: " << schedulerName << "\n";
+    std::cout << "======================================\n\n";
     const uint32_t MTU  = 1000;
     const uint32_t maxPacketsPerFrame = 3;
 
@@ -129,7 +191,7 @@ void run_tests() {
 
     {
         std::vector<Packet> input;
-        for(int i = 0; i < 10000; ++i) input.push_back({uint32_t(i % 100), 10});
+        for(int i = 0; i < 1e5; ++i) input.push_back({uint32_t(i % 100), 10});
 
         auto start = std::chrono::steady_clock::now();
         auto plan = mapQosToFrameSequence(100, 10, input);
@@ -179,7 +241,7 @@ void run_tests() {
 
         };
         auto plan = mapQosToFrameSequence(MTU, maxPacketsPerFrame, input);
-        assert(plan[0].size() == 2); // {100, 800} и {10, 100}
+        assert(plan[0].size() == 2); // {100, 800} and {10, 100}
         assert(plan[0][1].get().priority == 10); 
         std::cout << "Test 9 (Gap Filling): PASSED\n";
     }
@@ -201,11 +263,13 @@ void run_tests() {
         assert(plan[3].size() == 1);
         std::cout << "Test 11 (MaxCount Limit): PASSED\n";
     }
+    std::cout << "\n";
 }
 
 int main() {
 
-    run_tests();
+    run_tests<mapQosToFrameSequence>("First Fit (O(N^2))");
+    run_tests<mapQosToFrameSequenceFast>("Next Fit Fast (O(N log N))");
 
     return 0;
 }
