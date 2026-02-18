@@ -12,18 +12,34 @@ struct Packet {
     uint32_t payload;
 };
 
+enum class MTUViolationPolicy {
+    Drop,
+    Fragment
+};
+
 using PacketRef = std::reference_wrapper<const Packet>;
 using Frame = std::vector<PacketRef>;
 
-std::vector<Frame> makePlaning( uint32_t const MTU,
+std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
                                 uint32_t const maxPacketsPerFrame,
-                                std::vector<Packet> const& txQueue)
+                                std::vector<Packet> const& txQueue,
+                                MTUViolationPolicy policy = MTUViolationPolicy::Drop)
 {
     if (txQueue.empty()) return {};
 
     Frame inputBuffer;
     inputBuffer.reserve(txQueue.size());
-    for (const auto& item : txQueue) inputBuffer.emplace_back(item);
+    for (const auto& pkt : txQueue) {
+        if (pkt.payload > MTU) {
+            if (policy == MTUViolationPolicy::Fragment) {
+                //TODO
+            }
+            if (policy == MTUViolationPolicy::Drop) {
+                continue;
+            }
+        }
+        inputBuffer.emplace_back(pkt);
+    }
 
     std::ranges::sort(inputBuffer, [](const Packet& a, const Packet& b) {
         if (a.priority != b.priority) return a.priority > b.priority;
@@ -67,30 +83,30 @@ void run_tests() {
 
     {
         std::vector<Packet> input = {{100, 500}, {100, 500}, {50, 300}, {50, 300}, {50, 300}};
-        auto plan = makePlaning(MTU, 3, input);
+        auto plan = mapQosToFrameSequence(MTU, 3, input);
         assert(plan.size() <= 3);
         std::cout << "Test 1 (Basic): PASSED\n";
     }
 /*
     {
         std::vector<Packet> input = {{100, 950}, {40, 300}, {40, 300}, {40, 300}};
-        auto plan = makePlaning(MTU, 3, input);
+        auto plan = mapQosToFrameSequence(MTU, 3, input);
         assert(plan.size() <= 2);
         assert(plan[0].size() == 3);
         std::cout << "Test 2 (Inversion of order): PASSED\n";
     }
-
+*/
     {
         std::vector<Packet> input = {{100, 1500}, {100, 200}};
-        auto plan = makePlaning(1000, 5, input);
+        auto plan = mapQosToFrameSequence(1000, 5, input);
         assert(plan.size() == 1); 
         assert(plan[0][0].get().payload == 200);
         std::cout << "Test 3 (Over-MTU): PASSED\n";
     }
-*/
+
     {
         std::vector<Packet> input = {{1, 100}, {10, 100}, {5, 100}, {10, 100}};
-        auto plan = makePlaning(MTU, 2, input);
+        auto plan = mapQosToFrameSequence(MTU, 2, input);
         
         for(const auto& item : plan[0]) {
             assert(item.get().priority == 10);
@@ -103,7 +119,7 @@ void run_tests() {
         for(int i = 0; i < 10000; ++i) input.push_back({uint32_t(i % 100), 10});
 
         auto start = std::chrono::steady_clock::now();
-        auto plan = makePlaning(100, 10, input);
+        auto plan = mapQosToFrameSequence(100, 10, input);
         auto end = std::chrono::steady_clock::now();
         
         auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
@@ -111,7 +127,7 @@ void run_tests() {
     }
 
     {
-        auto plan = makePlaning(MTU, 10, {});
+        auto plan = mapQosToFrameSequence(MTU, 10, {});
         assert(plan.empty());
         std::cout << "Test 6 (Empty): PASSED\n";
     }
@@ -122,7 +138,7 @@ void run_tests() {
             {90, 100},
             {80, 100}
         };
-        auto plan = makePlaning(MTU, maxPacketsPerFrame, input);
+        auto plan = mapQosToFrameSequence(MTU, maxPacketsPerFrame, input);
         assert(plan.size() == 2);
         assert(plan[0].size() == 1);
         assert(plan[0][0].get().priority == 100);
@@ -135,7 +151,7 @@ void run_tests() {
             {90, 100},
             {80, 100}
         };
-        auto plan = makePlaning(MTU, maxPacketsPerFrame, input);
+        auto plan = mapQosToFrameSequence(MTU, maxPacketsPerFrame, input);
         assert(plan.size() == 2);
         assert(plan[0].size() == 1);
         assert(plan[0][0].get().priority == 100);
@@ -149,23 +165,23 @@ void run_tests() {
             {10, 100}
 
         };
-        auto plan = makePlaning(MTU, maxPacketsPerFrame, input);
+        auto plan = mapQosToFrameSequence(MTU, maxPacketsPerFrame, input);
         assert(plan[0].size() == 2); // {100, 800} и {10, 100}
         assert(plan[0][1].get().priority == 10); 
         std::cout << "Test 9 (Gap Filling): PASSED\n";
     }
-/*
+
     {
         std::vector<Packet> input = { {100, 2000}, {50, 100} };
-        auto plan = makePlaning(MTU, maxPacketsPerFrame, input);
+        auto plan = mapQosToFrameSequence(MTU, maxPacketsPerFrame, input);
         assert(plan.size() == 1);
         assert(plan[0][0].get().payload == 100);
         std::cout << "Test 10 (Over-MTU Item): PASSED\n";
     }
-*/
+
     {
         std::vector<Packet> input(10, {10, 10});
-        auto plan = makePlaning(MTU, 3, input);
+        auto plan = mapQosToFrameSequence(MTU, 3, input);
         
         assert(plan.size() == 4);
         assert(plan[0].size() == 3);
