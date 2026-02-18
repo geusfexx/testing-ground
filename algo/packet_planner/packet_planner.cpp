@@ -19,11 +19,26 @@ enum class MTUViolationPolicy {
 
 using PacketRef = std::reference_wrapper<const Packet>;
 using Frame = std::vector<PacketRef>;
+using SchedulingPolicy = std::function<bool(const Packet&, const Packet&)>;
+
+namespace Policies {
+    const SchedulingPolicy StrictPriority = [](const Packet& a, const Packet& b) {
+        if (a.priority != b.priority) return a.priority > b.priority;
+        return a.payload > b.payload;
+    };
+
+    const SchedulingPolicy WeightedEfficiency = [](const Packet& a, const Packet& b) {
+        double scoreA = static_cast<double>(a.priority) / a.payload;
+        double scoreB = static_cast<double>(b.priority) / b.payload;
+        return scoreA > scoreB;
+    };
+}
 
 std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
                                 uint32_t const maxPacketsPerFrame,
                                 std::vector<Packet> const& txQueue,
-                                MTUViolationPolicy policy = MTUViolationPolicy::Drop)
+                                MTUViolationPolicy MTUpolicy = MTUViolationPolicy::Drop,
+                                SchedulingPolicy schedPolicy = Policies::StrictPriority)
 {
     if (txQueue.empty()) return {};
 
@@ -31,20 +46,17 @@ std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
     inputBuffer.reserve(txQueue.size());
     for (const auto& pkt : txQueue) {
         if (pkt.payload > MTU) {
-            if (policy == MTUViolationPolicy::Fragment) {
+            if (MTUpolicy == MTUViolationPolicy::Fragment) {
                 //TODO
             }
-            if (policy == MTUViolationPolicy::Drop) {
+            if (MTUpolicy == MTUViolationPolicy::Drop) {
                 continue;
             }
         }
         inputBuffer.emplace_back(pkt);
     }
 
-    std::ranges::sort(inputBuffer, [](const Packet& a, const Packet& b) {
-        if (a.priority != b.priority) return a.priority > b.priority;
-        return a.payload > b.payload;
-    });// O(N log N) or O(N^2)
+    std::ranges::sort(inputBuffer, schedPolicy);// O(N log N) or O(N^2)
 
     std::vector<Frame> frameSequence;
     std::vector<bool> used(inputBuffer.size(), false);
@@ -87,15 +99,16 @@ void run_tests() {
         assert(plan.size() <= 3);
         std::cout << "Test 1 (Basic): PASSED\n";
     }
-/*
+
     {
         std::vector<Packet> input = {{100, 950}, {40, 300}, {40, 300}, {40, 300}};
-        auto plan = mapQosToFrameSequence(MTU, 3, input);
+        auto plan = mapQosToFrameSequence(MTU, 3, input, MTUViolationPolicy::Drop, Policies::WeightedEfficiency);
         assert(plan.size() <= 2);
         assert(plan[0].size() == 3);
+        assert(plan[1].size() == 1);
         std::cout << "Test 2 (Inversion of order): PASSED\n";
     }
-*/
+
     {
         std::vector<Packet> input = {{100, 1500}, {100, 200}};
         auto plan = mapQosToFrameSequence(1000, 5, input);
