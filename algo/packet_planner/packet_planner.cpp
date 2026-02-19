@@ -280,14 +280,14 @@ void run_tests(TCaller scheduler, std::string_view schedulerName) {
         std::cout << "Test 4 (Priority Strictness): PASSED\n";
     }
 
-    // Test 5: Real Stress Test (100k packets)
+    // Test 5: Real Stress Test (1M packets)
     {
         std::vector<Packet> input;
         std::vector<double> scheduling_delays_tti;
 
         const int numPackets = 1e6;
-        constexpr double LTE_TTI_MS = 1.0; // 1 TTI = 1 ms
-//        constexpr double 5G_FR2_TTI = 0.125;
+//        constexpr double TTI_LTE_MS = 1.0; // 1 TTI = 1 ms
+        constexpr double TTI_5G_FR2 = 0.125;
 
         input.reserve(numPackets);
         uint64_t total_payload_bits = 0;
@@ -318,17 +318,20 @@ void run_tests(TCaller scheduler, std::string_view schedulerName) {
         double dv_tti = std::sqrt(std::max(0.0, sq_sum / scheduling_delays_tti.size() - asd_tti * asd_tti));
 
         // Throughput
-        double total_time_s = (get_size(plan) * LTE_TTI_MS) / 1000.0;
+        //double total_time_s = (get_size(plan) * TTI_LTE_MS) / 1000.0;
+        double total_time_s = (get_size(plan) * TTI_5G_FR2) / 1000.0;
         double throughput_mbps = (total_payload_bits / 1e6) / total_time_s;
 
         std::cout << "--- LTE MAC Layer Performance Report ---\n";
+//        std::cout << " [TDMA] Avg Scheduling Delay: " << std::fixed << std::setprecision(2)
+//                  << asd_tti << " TTI (" << asd_tti * TTI_LTE_MS << " ms)\n";
         std::cout << " [TDMA] Avg Scheduling Delay: " << std::fixed << std::setprecision(2)
-                  << asd_tti << " TTI (" << asd_tti * LTE_TTI_MS << " ms)\n";
+                  << asd_tti << " TTI (" << asd_tti * TTI_5G_FR2 << " ms)\n";
         std::cout << " [TDMA] Delay Variation:     " << dv_tti << " TTI\n";
         std::cout << " [MAC]  Total Air Time:      " << total_time_s << " s\n";
         std::cout << " [MAC]  Throughput:          " << std::setprecision(3) << throughput_mbps << " Mbps\n";
         std::cout << " [CPU]  Processing Speed:    " << (numPackets / (diff.count() / 1e6)) / 1e6 << " Mpps\n";
-        std::cout << "Test 5 (Stress 100k): PASSED\n";
+        std::cout << "Test 5 (Stress 1M): PASSED\n";
     }
 
     // Test 6: Empty Input
