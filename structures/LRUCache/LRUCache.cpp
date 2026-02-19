@@ -1597,8 +1597,35 @@ private:
 *                               }; //NOTE Houston, I need a dispatcher :)
 */
 
+struct DirtyArena { //FIXME only to test the hypothesis
+    uint8_t* ptr;
+    std::atomic<size_t> offset{0};
+    size_t capacity;
+    struct Node { Node* next; };
+    std::atomic<Node*> free_list{nullptr};
 
-//              Up to 32 cores
+    static inline constexpr size_t PageSize = 2 * sizes::MiB;
+//    static_assert(sizeof(T) >= sizeof(Node));
+
+    DirtyArena() {
+        capacity = 1024 * PageSize; // 2 GiB
+        ptr = (uint8_t*)mmap(nullptr, capacity, PROT_READ | PROT_WRITE,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
+        if (ptr == MAP_FAILED) {
+            ptr = nullptr;
+            capacity = 0;
+        }
+    }
+    ~DirtyArena() { if (ptr) munmap(ptr, capacity); }
+};
+
+//CRITICAL  Arena must be the only one for ANY template instances
+//          to avoid segfault
+inline DirtyArena& get_global_arena() {
+    static DirtyArena arena;
+    return arena;
+}
+
 template <typename T>
 struct HugePagesAllocator {
     using value_type = T;
@@ -1608,25 +1635,8 @@ struct HugePagesAllocator {
     HugePagesAllocator() noexcept = default;
     template <typename U> HugePagesAllocator(const HugePagesAllocator<U>&) noexcept {}
 
-    struct DirtyArena { //FIXME only to test the hypothesis
-        uint8_t* ptr;
-        std::atomic<size_t> offset{0};
-        size_t capacity;
-        struct Node { Node* next; };
-        std::atomic<Node*> free_list{nullptr};
-
-        DirtyArena() {
-            capacity = 1024 * PageSize; // 2 GiB
-            ptr = (uint8_t*)mmap(nullptr, capacity, PROT_READ | PROT_WRITE,
-                                 MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0);
-            if (ptr == MAP_FAILED) ptr = nullptr;
-        }
-        ~DirtyArena() { if (ptr) munmap(ptr, capacity); }
-    };
-
     [[nodiscard]] static DirtyArena& get_arena() noexcept {
-        static DirtyArena arena;
-        return arena;
+        return get_global_arena();
     }
 
     [[nodiscard]] T* allocate(std::size_t n) {
