@@ -1,4 +1,5 @@
 #include <vector>
+#include <deque>
 #include <algorithm>
 #include <numeric>
 #include <ranges>
@@ -10,6 +11,7 @@
 #include <string_view>
 #include <execution>
 #include <span>
+#include <cmath>
 
 struct Packet {
     uint32_t priority;
@@ -51,6 +53,7 @@ concept SchedulerFunc = requires(F f, uint32_t m, uint32_t c, std::vector<Packet
 struct FlatFrameSequence {
     std::vector<PacketRef> allPackets;
     std::vector<std::size_t> frameOffsets; // Indexes
+    std::deque<Packet> fragmentedDb;
 
     std::span<const PacketRef> getFrame(std::size_t index) const {
         std::size_t start = frameOffsets[index];
@@ -61,9 +64,18 @@ struct FlatFrameSequence {
     std::size_t frameCount() const { return frameOffsets.size(); }
 };
 
+struct FrameSequence {
+    std::vector<Frame> frames;
+    std::deque<Packet> fragmentedDb;
+
+    size_t size() const { return frames.size(); }
+    const Frame& operator[](size_t i) const { return frames[i]; }
+    bool empty() const { return frames.empty(); }
+};
+
 // First Fit
 template<typename SchedPolicy = Policies::StrictPriority>
-std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
+FrameSequence mapQosToFrameSequence( uint32_t const MTU,
                                 uint32_t const maxPacketsPerFrame,
                                 std::vector<Packet> const& txQueue,
                                 MTUViolationPolicy MTUpolicy = MTUViolationPolicy::Drop,
@@ -71,28 +83,35 @@ std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
 {
     if (txQueue.empty()) return {};
 
+    FrameSequence outSequence;
     Frame inputBuffer;
     inputBuffer.reserve(txQueue.size());
+
     for (const auto& pkt : txQueue) {
         if (pkt.payload > MTU) {
             if (MTUpolicy == MTUViolationPolicy::Fragment) {
-                //TODO
+                uint32_t remaining = pkt.payload;
+
+                while (remaining > 0) {
+                    uint32_t chunk = std::min(remaining, MTU);
+                    outSequence.fragmentedDb.push_back({pkt.priority, chunk});
+                    inputBuffer.emplace_back(outSequence.fragmentedDb.back());
+                    remaining -= chunk;
+                }
             }
-            if (MTUpolicy == MTUViolationPolicy::Drop) {
-                continue;
-            }
+
+            continue;
         }
         inputBuffer.emplace_back(pkt);
     }
 
-    std::ranges::sort(inputBuffer, schedPolicy); // O(N log N) or O(N^2)
+    std::ranges::stable_sort(inputBuffer, schedPolicy); // O(N log N) or O(N^2)
 
-    std::vector<Frame> frameSequence;
     std::vector<bool> used(inputBuffer.size(), false);
     uint32_t remaining = inputBuffer.size();
 
      while (remaining > 0) { // O (N^2)
-        auto& currentBatch = frameSequence.emplace_back();
+        auto& currentBatch = outSequence.frames.emplace_back();
         currentBatch.reserve(maxPacketsPerFrame);
         uint64_t currentSumValue = 0;
 
@@ -115,7 +134,7 @@ std::vector<Frame> mapQosToFrameSequence( uint32_t const MTU,
         if (currentBatch.empty()) break;
     }
 
-    return frameSequence;
+    return outSequence;
 }
 
 // Next Fit
@@ -129,23 +148,31 @@ FlatFrameSequence mapQosToFrameSequenceFast(
 {
     if (txQueue.empty()) return {};
 
-    // O(N)
+    FlatFrameSequence outSequence;
     Frame inputBuffer;
     inputBuffer.reserve(txQueue.size());
+
+    // O(N)
     for (const auto& pkt : txQueue) {
         if (pkt.payload <= MTU) {
             inputBuffer.emplace_back(pkt);
         } else if (MTUpolicy == MTUViolationPolicy::Fragment) {
-            //TODO
+            uint32_t remaining = pkt.payload;
+
+            while (remaining > 0) {
+                uint32_t chunk = std::min(remaining, MTU);
+                outSequence.fragmentedDb.push_back({pkt.priority, chunk});
+                inputBuffer.emplace_back(outSequence.fragmentedDb.back());
+                remaining -= chunk;
+            }
         }
     }
 
 //    std::ranges::sort(inputBuffer, schedPolicy); // O(N log N) or O(N^2)
-    std::sort(std::execution::unseq, inputBuffer.begin(), inputBuffer.end(), schedPolicy); // O(N log N)
+    std::stable_sort(std::execution::unseq, inputBuffer.begin(), inputBuffer.end(), schedPolicy); // O(N log N)
 
-    FlatFrameSequence frameSequence;
-    frameSequence.allPackets.reserve(inputBuffer.size());
-    frameSequence.frameOffsets.reserve(inputBuffer.size() / 2);
+    outSequence.allPackets.reserve(inputBuffer.size());
+    outSequence.frameOffsets.reserve(inputBuffer.size() / 2 + 1);
     if (inputBuffer.empty()) return {};
 
     uint64_t currentFramePayload = 0;
@@ -159,17 +186,17 @@ FlatFrameSequence mapQosToFrameSequenceFast(
             currentFrameCount >= maxPacketsPerFrame ||
             (currentFramePayload + pkt.payload) > MTU)
         {
-            frameSequence.frameOffsets.push_back(frameSequence.allPackets.size());
+            outSequence.frameOffsets.push_back(outSequence.allPackets.size());
             currentFramePayload = 0;
             currentFrameCount = 0;
         }
 
-        frameSequence.allPackets.push_back(pktRef);
+        outSequence.allPackets.push_back(pktRef);
         currentFramePayload += pkt.payload;
         currentFrameCount++;
     }
 
-    return frameSequence;
+    return outSequence;
 }
 
 void printHeader(std::string_view schedulerName) {
@@ -255,6 +282,8 @@ void run_tests(TCaller scheduler, std::string_view schedulerName) {
     // Test 5: Real Stress Test (100k packets)
     {
         std::vector<Packet> input;
+         std::vector<double> latencies;
+
         const int numPackets = 1e5;
         input.reserve(numPackets);
         for(int i = 0; i < numPackets; ++i) input.push_back({uint32_t(i % 100), 10});
@@ -263,8 +292,22 @@ void run_tests(TCaller scheduler, std::string_view schedulerName) {
         auto plan = scheduler(100, 10, input,
                               MTUViolationPolicy::Drop, Policies::StrictPriority{});
         auto end = std::chrono::steady_clock::now();
-        
+
         auto diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+        
+        for (size_t i = 0; i < get_size(plan); ++i) {
+            auto frame = get_frame(plan, i);
+            for (size_t j = 0; j < frame.size(); ++j) {
+                latencies.push_back(static_cast<double>(i));
+            }
+        }
+
+        double mean = std::accumulate(latencies.begin(), latencies.end(), 0.0) / latencies.size();
+        double sq_sum = std::inner_product(latencies.begin(), latencies.end(), latencies.begin(), 0.0);
+        double stdev = std::sqrt(sq_sum / latencies.size() - mean * mean);
+
+        std::cout << " [METR] Avg Latency: " << mean << " frames\n";
+        std::cout << " [METR] Jitter (stddev): " << stdev << " frames\n";
         std::cout << "Test 5 (Stress 100k): PASSED in " << diff.count() / 1000.0 << "ms\n";
     }
 
@@ -311,6 +354,48 @@ void run_tests(TCaller scheduler, std::string_view schedulerName) {
         assert(get_size(plan) == 4);
         std::cout << "Test 9 (MaxCount Limit): PASSED\n";
     }
+
+    // Test 10: Fragmentation Basic (One huge packet)
+    {
+        std::vector<Packet> input = {{100, 2500}};
+        auto plan = scheduler(1000, maxPacketsPerFrame, input,
+                              MTUViolationPolicy::Fragment, Policies::StrictPriority{});
+
+        assert(get_size(plan) == 3);
+        assert(get_frame(plan, 0)[0].get().payload == 1000);
+        assert(get_frame(plan, 2)[0].get().payload == 500);
+        std::cout << "Test 10 (Fragmentation Basic): PASSED\n";
+    }
+
+    // Test 11: Fragmentation with Gap Filling
+    {
+        std::vector<Packet> input = {{100, 1500}, {50, 300}};
+        auto plan = scheduler(MTU, maxPacketsPerFrame, input,
+                              MTUViolationPolicy::Fragment, Policies::StrictPriority{});
+
+            assert(get_size(plan) == 2);
+            bool found_mix = false;
+            auto f1 = get_frame(plan, 1);
+            if (f1.size() == 2) found_mix = true;
+            assert(found_mix);
+            std::cout << "Test 11 (Fragmentation Gap Filling): PASSED\n";
+    }
+
+    // Test 12: Fragmentation Stress (Latency check)
+    {
+        std::vector<Packet> input;
+        for(int i = 0; i < 1000; ++i) input.push_back({100, 5000});
+
+        auto start = std::chrono::steady_clock::now();
+        auto plan = scheduler(MTU, maxPacketsPerFrame, input,
+                              MTUViolationPolicy::Fragment, Policies::StrictPriority{});
+        auto end = std::chrono::steady_clock::now();
+
+        auto diff = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+        std::cout << "Test 12 (Fragmentation Stress): Generated " << get_size(plan)
+                  << " frames in " << diff.count() << "ms\n";
+    }
+
     std::cout << "\n";
 }
 
