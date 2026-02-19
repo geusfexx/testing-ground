@@ -12,6 +12,7 @@
 #include <execution>
 #include <span>
 #include <cmath>
+#include <iomanip>
 
 struct Packet {
     uint32_t priority;
@@ -282,33 +283,52 @@ void run_tests(TCaller scheduler, std::string_view schedulerName) {
     // Test 5: Real Stress Test (100k packets)
     {
         std::vector<Packet> input;
-         std::vector<double> latencies;
+        std::vector<double> scheduling_delays_tti;
 
-        const int numPackets = 1e5;
+        const int numPackets = 1e6;
+        constexpr double LTE_TTI_MS = 1.0; // 1 TTI = 1 ms
+//        constexpr double 5G_FR2_TTI = 0.125;
+
         input.reserve(numPackets);
-        for(int i = 0; i < numPackets; ++i) input.push_back({uint32_t(i % 100), 10});
+        uint64_t total_payload_bits = 0;
+        for(int i = 0; i < numPackets; ++i) {
+            uint32_t size = 10 + (i % 90);
+            input.push_back({uint32_t(i % 100), size});
+            total_payload_bits += (size * 8);
+        }
 
         auto start = std::chrono::steady_clock::now();
-        auto plan = scheduler(100, 10, input,
-                              MTUViolationPolicy::Drop, Policies::StrictPriority{});
+        auto plan = scheduler(1500, 64, input, MTUViolationPolicy::Drop, Policies::StrictPriority{});
         auto end = std::chrono::steady_clock::now();
 
         auto diff = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        
+
+        // TDMA - statistics
         for (size_t i = 0; i < get_size(plan); ++i) {
             auto frame = get_frame(plan, i);
             for (size_t j = 0; j < frame.size(); ++j) {
-                latencies.push_back(static_cast<double>(i));
+                scheduling_delays_tti.push_back(static_cast<double>(i));
             }
         }
 
-        double mean = std::accumulate(latencies.begin(), latencies.end(), 0.0) / latencies.size();
-        double sq_sum = std::inner_product(latencies.begin(), latencies.end(), latencies.begin(), 0.0);
-        double stdev = std::sqrt(sq_sum / latencies.size() - mean * mean);
+        double sum_tti = std::accumulate(scheduling_delays_tti.begin(), scheduling_delays_tti.end(), 0.0);
+        double asd_tti = sum_tti / scheduling_delays_tti.size();
+        double sq_sum = std::inner_product(scheduling_delays_tti.begin(), scheduling_delays_tti.end(),
+                                           scheduling_delays_tti.begin(), 0.0);
+        double dv_tti = std::sqrt(std::max(0.0, sq_sum / scheduling_delays_tti.size() - asd_tti * asd_tti));
 
-        std::cout << " [METR] Avg Latency: " << mean << " frames\n";
-        std::cout << " [METR] Jitter (stddev): " << stdev << " frames\n";
-        std::cout << "Test 5 (Stress 100k): PASSED in " << diff.count() / 1000.0 << "ms\n";
+        // Throughput
+        double total_time_s = (get_size(plan) * LTE_TTI_MS) / 1000.0;
+        double throughput_mbps = (total_payload_bits / 1e6) / total_time_s;
+
+        std::cout << "--- LTE MAC Layer Performance Report ---\n";
+        std::cout << " [TDMA] Avg Scheduling Delay: " << std::fixed << std::setprecision(2)
+                  << asd_tti << " TTI (" << asd_tti * LTE_TTI_MS << " ms)\n";
+        std::cout << " [TDMA] Delay Variation:     " << dv_tti << " TTI\n";
+        std::cout << " [MAC]  Total Air Time:      " << total_time_s << " s\n";
+        std::cout << " [MAC]  Throughput:          " << std::setprecision(3) << throughput_mbps << " Mbps\n";
+        std::cout << " [CPU]  Processing Speed:    " << (numPackets / (diff.count() / 1e6)) / 1e6 << " Mpps\n";
+        std::cout << "Test 5 (Stress 100k): PASSED\n";
     }
 
     // Test 6: Empty Input
