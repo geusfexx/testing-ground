@@ -7,6 +7,7 @@
 #include <array>
 #include <iomanip>
 #include "LRUCache.cpp"
+//#include "Lv6_bdFlatLRU.cpp"
 
 struct TestConfig {
     int readers;
@@ -183,10 +184,10 @@ std::cout << "========================================================\n"
 
 int main()
 {
-    const long long iters = 1e8;
-    constexpr int cache_sz = 128 * 1024;
-    constexpr int k_range = cache_sz * 108 / 100;
-    const int payload_size = 32 * 1024;
+    const long long iters = 1e6;
+    constexpr int cache_sz = 64 * 1024;
+    constexpr int k_range = cache_sz * 120 / 100;
+    const int payload_size = 64 * 1024;
     const int shards_amount = 32;
 
     using DataType = Payload<payload_size>;
@@ -205,6 +206,7 @@ int main()
     using Lv3_bdFM = Lv3_bdFlatLRU<int, DataType, cache_sz>;
     using Lv4_bdFM = Lv4_bdFlatLRU<int, DataType, cache_sz>;
     using Lv5_bdFM = Lv5_bdFlatLRU<int, DataType, cache_sz>;
+//    using Lv6_bdFM = Lv6_bdFlatLRU<int, DataType, cache_sz>;
 
     using S_Slow = ShardedCache<StrictLRU, int, DataType, cache_sz, shards_amount>;
     using S_Spin = ShardedCache<SpinlockedLRU, int, DataType, cache_sz, shards_amount>;
@@ -216,12 +218,14 @@ int main()
     using S_Lv4_bdFM = ShardedCache<Lv4_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
     using S2_Lv4_bdFM = Lv2_ShardedCache<Lv4_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
     using S3_Lv5_bdFM = Lv3_ShardedCache<Lv5_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
+//    using S4_Lv6_bdFM = Lv4_ShardedCache<Lv6_bdFlatLRU, int, DataType, cache_sz, shards_amount>;
+
 //    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM, Lv5_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(balanced);
 //    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM, Lv5_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(write_heavy);
 //    execute_scenario<false, Slow, Spin, Def, DefFM, Lv1_bdFM, Lv2_bdFM, Lv3_bdFM, Lv4_bdFM, Lv5_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM, S_Lv2_bdFM, S_Lv3_bdFM, S2_Lv4_bdFM, S3_Lv5_bdFM>(read_heavy);
 
-    execute_scenario<false, /*S_Lv3_bdFM,*/ S2_Lv4_bdFM, S3_Lv5_bdFM>(read_heavy);
-
+    execute_scenario<false, /*S_Lv3_bdFM, */S2_Lv4_bdFM, S3_Lv5_bdFM>(read_heavy);
+//    execute_scenario<false, /*S_Lv3_bdFM, */S2_Lv4_bdFM, S3_Lv5_bdFM, S4_Lv6_bdFM>(read_heavy);
 /*
     execute_scenario<true, Slow, Spin, Def, DefFM, Lv1_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM>(balanced);
     execute_scenario<true, Slow, Spin, Def, DefFM, Lv1_bdFM, S_Slow, S_Spin, S_Def, S_DefFM, S_Lv1_bdFM>(write_heavy);

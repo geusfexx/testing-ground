@@ -1,3 +1,13 @@
+Lv6 expected:
+	Full compatibility: The get / put are identical to Lv5.     //NOTE
+	Housekeeper (basic)                                         //TODO
+	Coalescing Filter                                           //TODO
+	Lock-Free Shard Ownership                                   //TODO
+	Telemetry                                                   //TODO
+	Arena Finalization                                          //TODO
+	Flatmap Optimization                                        //TODO
+
+
 perf log with minimum perf/OS distorsion near the same clear execution:
 
 Preconditions:
